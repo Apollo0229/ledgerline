@@ -10,6 +10,6 @@
     <Using Include="Xunit" />
   </ItemGroup>
   <ItemGroup>
-    <ProjectReference Include="..\..\src\Ledgerline.Core\Ledgerline.Core.csproj" />
+    <ProjectReference Include="..\..\src\Ledgerline.Search\Ledgerline.Search.csproj" />
   </ItemGroup>
 </Project>

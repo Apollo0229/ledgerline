@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <PackageReference Include="Elastic.Clients.Elasticsearch" Version="9.5.3" />
+  </ItemGroup>
+  <ItemGroup>
+    <EmbeddedResource Include="payments-template.json" LogicalName="payments-template.json" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\Ledgerline.Core\Ledgerline.Core.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="Ledgerline.Tests" />
+  </ItemGroup>
+</Project>

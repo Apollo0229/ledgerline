@@ -9,7 +9,7 @@ public class IndexLayoutTests
     [Fact]
     public void Names_one_index_per_month()
     {
-        Assert.Equal("payments-2026.03", IndexLayout.IndexFor(new DateOnly(2026, 3, 31)));
+        Assert.Equal("payments-2026.03", Layout.IndexFor(new DateOnly(2026, 3, 31)));
     }
 
     [Fact]

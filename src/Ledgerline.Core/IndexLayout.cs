@@ -10,10 +10,10 @@ public sealed record Segment(string Label, DateOnly From, DateOnly To, IReadOnly
 /// <see cref="HotMonths"/> months are the hot tier, still written to and searched most; everything
 /// older is cold: read-only and merged down to one segment.
 /// </summary>
-public sealed class IndexLayout(DateOnly today, int hotMonths = 3, int historyYears = 7)
+/// <remarks>Tests use their own <paramref name="prefix"/>, such as <c>payments-test-</c>, so they never touch seeded data.</remarks>
+public sealed class IndexLayout(DateOnly today, int hotMonths = 3, int historyYears = 7, string prefix = "payments-")
 {
-    public const string Prefix = "payments-";
-    public const string Pattern = Prefix + "*";
+    public string Prefix { get; } = prefix;
 
     public DateOnly Today { get; } = today;
     public int HotMonths { get; } = hotMonths;
@@ -24,7 +24,7 @@ public sealed class IndexLayout(DateOnly today, int hotMonths = 3, int historyYe
     /// <summary>The first day of the oldest hot month.</summary>
     public DateOnly HotStart { get; } = FirstOfMonth(today).AddMonths(-(hotMonths - 1));
 
-    public static string IndexFor(DateOnly date) => $"{Prefix}{date:yyyy.MM}";
+    public string IndexFor(DateOnly date) => $"{Prefix}{date:yyyy.MM}";
 
     public bool IsHot(DateOnly date) => date >= HotStart;
 
@@ -69,7 +69,7 @@ public sealed class IndexLayout(DateOnly today, int hotMonths = 3, int historyYe
     private (DateOnly, DateOnly) Clamp(DateOnly? from, DateOnly? to) =>
         (Max(from ?? Earliest, Earliest), Min(to ?? Today, Today));
 
-    private static Segment Make(string label, DateOnly from, DateOnly to)
+    private Segment Make(string label, DateOnly from, DateOnly to)
     {
         var indices = new List<string>();
         for (var m = FirstOfMonth(from); m <= to; m = m.AddMonths(1)) indices.Add(IndexFor(m));
