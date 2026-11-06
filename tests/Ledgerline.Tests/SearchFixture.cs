@@ -47,6 +47,13 @@ public sealed class SearchFixture : IAsyncLifetime
         foreach (var month in Layout.Months()) await index.DeleteAsync(Layout.IndexFor(month));
     }
 
-    public void RequireCluster() =>
+    /// <summary>Skips without a cluster locally. CI sets REQUIRE_ELASTICSEARCH=1 so a missing cluster fails instead of passing quietly.</summary>
+    public void RequireCluster()
+    {
+        if (!Available && Environment.GetEnvironmentVariable("REQUIRE_ELASTICSEARCH") == "1")
+        {
+            Assert.Fail("REQUIRE_ELASTICSEARCH is set but Elasticsearch is not reachable.");
+        }
         Assert.SkipUnless(Available, "Elasticsearch is not reachable; run `docker compose up -d elasticsearch`.");
+    }
 }
