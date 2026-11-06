@@ -1,0 +1,9 @@
+root = true
+
+[*.cs]
+indent_style = space
+indent_size = 4
+
+# Test names read as sentences: Hot_segment_is_null_when_the_range_is_all_cold
+[tests/**.cs]
+dotnet_diagnostic.CA1707.severity = none

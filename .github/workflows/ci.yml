@@ -1,0 +1,34 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    name: Build and test (.NET + Elasticsearch)
+    runs-on: ubuntu-latest
+    services:
+      elasticsearch:
+        image: elasticsearch:9.5.5
+        env:
+          discovery.type: single-node
+          xpack.security.enabled: "false"
+          ES_JAVA_OPTS: -Xms1g -Xmx1g
+        ports:
+          - 9200:9200
+        options: >-
+          --health-cmd "curl -fs localhost:9200/_cluster/health?wait_for_status=yellow"
+          --health-interval 5s --health-timeout 10s --health-retries 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v6
+        with:
+          global-json-file: global.json
+      - run: dotnet build -c Release
+      - name: Test (integration tests run against the Elasticsearch service)
+        run: dotnet test -c Release --no-build
+        env:
+          ELASTICSEARCH_URL: http://localhost:9200
+          REQUIRE_ELASTICSEARCH: "1"

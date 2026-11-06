@@ -1,0 +1,27 @@
+{
+  "index_patterns": ["payments-*"],
+  "template": {
+    "settings": {
+      "number_of_shards": 1,
+      "number_of_replicas": 0,
+      "refresh_interval": "1s",
+      "sort.field": "deposit_date",
+      "sort.order": "desc"
+    },
+    "mappings": {
+      "dynamic": "strict",
+      "properties": {
+        "id": { "type": "keyword" },
+        "deposit_date": { "type": "date", "format": "strict_date" },
+        "client": { "type": "keyword" },
+        "lockbox": { "type": "keyword" },
+        "payer": { "type": "text", "fields": { "raw": { "type": "keyword" } } },
+        "check_number": { "type": "keyword" },
+        "amount": { "type": "scaled_float", "scaling_factor": 100 },
+        "invoices": { "type": "keyword" },
+        "status": { "type": "keyword" },
+        "memo": { "type": "text" }
+      }
+    }
+  }
+}
