@@ -5,11 +5,12 @@
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="xunit.v3" Version="4.0.2" />
+    <PackageReference Include="Microsoft.AspNetCore.Mvc.Testing" Version="10.0.14" />
   </ItemGroup>
   <ItemGroup>
     <Using Include="Xunit" />
   </ItemGroup>
   <ItemGroup>
-    <ProjectReference Include="..\..\src\Ledgerline.Search\Ledgerline.Search.csproj" />
+    <ProjectReference Include="..\..\src\Ledgerline.Api\Ledgerline.Api.csproj" />
   </ItemGroup>
 </Project>
