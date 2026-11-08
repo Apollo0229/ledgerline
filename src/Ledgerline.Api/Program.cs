@@ -7,6 +7,8 @@ var builder = WebApplication.CreateBuilder(args);
 var url = new Uri(builder.Configuration["Elasticsearch:Url"] ?? "http://localhost:9200");
 builder.Services.AddSingleton(_ => ElasticConnection.Connect(url));
 builder.Services.AddSingleton<PaymentSearch>();
+builder.Services.AddSingleton<ISegmentSearch>(sp => sp.GetRequiredService<PaymentSearch>());
+builder.Services.AddSingleton<TwoPhaseSearch>();
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddSingleton(sp =>
     new IndexLayout(DateOnly.FromDateTime(sp.GetRequiredService<TimeProvider>().GetUtcNow().UtcDateTime)));
@@ -31,6 +33,16 @@ v1.MapGet("/search", async ([AsParameters] SearchParams p, PaymentSearch search,
     if (segment is null) return Results.Ok(new SearchPage { Hits = [], Totals = Totals.Empty, TookMs = 0 });
 
     return Results.Ok(await search.SearchAsync(query, segment, p.Size ?? SearchParams.DefaultSize, ct));
+});
+
+// Two-phase: page 1 from the hot tier at once, then running totals year by year, over Server-Sent Events.
+// Closing the connection cancels the request token, which stops the searches still to run.
+v1.MapGet("/search/stream", IResult ([AsParameters] SearchParams p, TwoPhaseSearch search, ILogger<Program> logger, CancellationToken ct) =>
+{
+    if (p.Validate() is { } problem) return Results.ValidationProblem(problem);
+
+    var events = search.RunAsync(p.ToQuery(), p.Size ?? SearchParams.DefaultSize, ct);
+    return TypedResults.ServerSentEvents(SearchStream.ToSse(events, logger, ct));
 });
 
 app.Run();
