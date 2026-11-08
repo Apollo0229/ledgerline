@@ -2,8 +2,9 @@
 //
 //   dotnet run --project src/Ledgerline.Seeder -- --count 5000000
 //
-// Re-running is safe: a month whose index already holds the planned number of payments is skipped,
-// and any other month is rebuilt from scratch, so an interrupted load can simply be started again.
+// Re-running is safe: a month that finished loading is kept as it is, and a missing or interrupted month
+// is rebuilt from scratch, so an interrupted load can simply be started again. Completed months are never
+// reloaded just because the plan moved on a day, so searches keep working while new months are added.
 
 using System.Diagnostics;
 using System.Globalization;
@@ -26,9 +27,9 @@ await Parallel.ForEachAsync(plan, new ParallelOptions { MaxDegreeOfParallelism =
 {
     var (month, count) = entry;
     var name = layout.IndexFor(month);
-    if (await index.CountAsync(name, ct) == count)
+    if (await index.IsCompleteAsync(name, ct))
     {
-        Interlocked.Add(ref skipped, count);
+        Interlocked.Increment(ref skipped);
         return;
     }
 
@@ -46,7 +47,7 @@ await Parallel.ForEachAsync(plan, new ParallelOptions { MaxDegreeOfParallelism =
 });
 
 var rate = loaded / Math.Max(clock.Elapsed.TotalSeconds, 0.001);
-Console.WriteLine($"Done in {clock.Elapsed:mm\\:ss}: {loaded:N0} loaded ({rate:N0}/s), {skipped:N0} already in place");
+Console.WriteLine($"Done in {clock.Elapsed:mm\\:ss}: {loaded:N0} loaded ({rate:N0}/s), {skipped} months already complete");
 
 internal sealed record Options(Uri Url, int Count, DateOnly Today, int Parallel)
 {

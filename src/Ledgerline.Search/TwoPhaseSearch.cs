@@ -36,6 +36,7 @@ public sealed class TwoPhaseSearch(ISegmentSearch search, IndexLayout layout, Ti
         if (layout.Hot(query.From, query.To) is { } hot) segments.Add(hot);
         segments.AddRange(layout.ColdYears(query.From, query.To));
 
+        yield return new PlanEvent(Now(), [.. segments.Select(x => new PlannedSegment(x.Label, x.From, x.To))]);
         if (segments.Count == 0)
         {
             yield return new PageEvent(Now(), [], Complete: true);

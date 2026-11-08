@@ -1,5 +1,6 @@
 using Elastic.Clients.Elasticsearch;
 using Elastic.Clients.Elasticsearch.Core.Bulk;
+using System.Text.Json;
 using Elastic.Transport;
 using Ledgerline.Core;
 using HttpMethod = Elastic.Transport.HttpMethod;
@@ -19,14 +20,23 @@ public sealed class PaymentIndex(ElasticsearchClient client)
         await SendAsync(HttpMethod.PUT, "/_index_template/payments", body, ct).ConfigureAwait(false);
     }
 
-    /// <summary>Number of documents in an index, or -1 if it doesn't exist.</summary>
-    public async Task<long> CountAsync(string index, CancellationToken ct = default)
+    /// <summary>
+    /// Whether a month finished loading. A load switches refreshes off and <see cref="SealAsync"/> switches
+    /// them back on as its last step, so an index that still has them off was interrupted part way.
+    /// </summary>
+    public async Task<bool> IsCompleteAsync(string index, CancellationToken ct = default)
     {
-        var exists = await client.Indices.ExistsAsync(index, ct).ConfigureAwait(false);
-        if (!exists.Exists) return -1;
-        await client.Indices.RefreshAsync(index, ct).ConfigureAwait(false);
-        var count = await client.CountAsync(new CountRequest(index), ct).ConfigureAwait(false);
-        return count.Count;
+        var response = await client.Transport.RequestAsync<StringResponse>(
+            HttpMethod.GET, $"/{index}/_settings/index.refresh_interval", cancellationToken: ct).ConfigureAwait(false);
+        if (response.ApiCallDetails.HttpStatusCode == 404) return false;
+        if (!response.ApiCallDetails.HasSuccessfulStatusCode)
+        {
+            throw new InvalidOperationException($"Reading settings of {index} failed: {response.Body}");
+        }
+
+        using var json = JsonDocument.Parse(response.Body);
+        var refresh = json.RootElement.GetProperty(index).GetProperty("settings").GetProperty("index").GetProperty("refresh_interval");
+        return refresh.GetString() != "-1";
     }
 
     public async Task DeleteAsync(string index, CancellationToken ct = default) =>
@@ -57,12 +67,17 @@ public sealed class PaymentIndex(ElasticsearchClient client)
     /// </summary>
     public async Task SealAsync(string index, bool hot, CancellationToken ct = default)
     {
-        await SendAsync(HttpMethod.PUT, $"/{index}/_settings", """{"index":{"refresh_interval":"1s"}}""", ct).ConfigureAwait(false);
         await client.Indices.RefreshAsync(index, ct).ConfigureAwait(false);
-        if (hot) return;
+        if (!hot)
+        {
+            await SendAsync(HttpMethod.POST, $"/{index}/_forcemerge?max_num_segments=1", null, ct).ConfigureAwait(false);
+        }
 
-        await SendAsync(HttpMethod.PUT, $"/{index}/_settings", """{"index":{"blocks":{"write":true}}}""", ct).ConfigureAwait(false);
-        await SendAsync(HttpMethod.POST, $"/{index}/_forcemerge?max_num_segments=1", null, ct).ConfigureAwait(false);
+        // Last, because it marks the month complete (see IsCompleteAsync). Cold months also become read-only.
+        var settings = hot
+            ? """{"index":{"refresh_interval":"1s"}}"""
+            : """{"index":{"refresh_interval":"1s","blocks":{"write":true}}}""";
+        await SendAsync(HttpMethod.PUT, $"/{index}/_settings", settings, ct).ConfigureAwait(false);
     }
 
     private async Task SendAsync(HttpMethod method, string path, string? body, CancellationToken ct)

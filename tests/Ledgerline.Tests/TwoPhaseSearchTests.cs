@@ -17,7 +17,8 @@ public class TwoPhaseSearchTests
 
         var events = await Run(fake, size: 50);
 
-        var page = Assert.IsType<PageEvent>(events[0]);
+        Assert.Equal(Order, Assert.IsType<PlanEvent>(events[0]).Segments.Select(s => s.Label));
+        var page = Assert.IsType<PageEvent>(events[1]);
         Assert.True(page.Complete);
         Assert.All(page.Hits, h => Assert.StartsWith("hot-", h.Id));
         Assert.Single(events.OfType<PageEvent>());
@@ -95,8 +96,9 @@ public class TwoPhaseSearchTests
     {
         var events = await Run(new FakeSearch(), 50, new PaymentQuery { From = new DateOnly(2010, 1, 1), To = new DateOnly(2011, 1, 1) });
 
-        Assert.Equal([], Assert.IsType<PageEvent>(events[0]).Hits);
-        Assert.Equal(0, Assert.IsType<DoneEvent>(events[1]).Totals.Count);
+        Assert.Empty(Assert.IsType<PlanEvent>(events[0]).Segments);
+        Assert.Equal([], Assert.IsType<PageEvent>(events[1]).Hits);
+        Assert.Equal(0, Assert.IsType<DoneEvent>(events[2]).Totals.Count);
     }
 
     [Fact]

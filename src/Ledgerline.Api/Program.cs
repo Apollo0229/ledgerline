@@ -35,6 +35,9 @@ v1.MapGet("/search", async ([AsParameters] SearchParams p, PaymentSearch search,
     return Results.Ok(await search.SearchAsync(query, segment, p.Size ?? SearchParams.DefaultSize, ct));
 });
 
+v1.MapGet("/clients", async (PaymentSearch search, IndexLayout layout, CancellationToken ct) =>
+    Results.Ok(await search.ClientsAsync(layout.All(null, null)!, ct)));
+
 // Two-phase: page 1 from the hot tier at once, then running totals year by year, over Server-Sent Events.
 // Closing the connection cancels the request token, which stops the searches still to run.
 v1.MapGet("/search/stream", IResult ([AsParameters] SearchParams p, TwoPhaseSearch search, ILogger<Program> logger, CancellationToken ct) =>

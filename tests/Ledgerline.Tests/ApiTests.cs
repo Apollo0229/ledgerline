@@ -1,4 +1,5 @@
 using System.Net;
+using System.Net.Http.Json;
 using System.Text.Json;
 using Ledgerline.Core;
 using Microsoft.AspNetCore.Mvc.Testing;
@@ -47,6 +48,17 @@ public sealed class ApiTests(SearchFixture fx) : IDisposable
         Assert.Equal(expected, totals.GetProperty("by_status").GetProperty("exception").GetInt64());
         Assert.All(body.RootElement.GetProperty("hits").EnumerateArray(),
             h => Assert.Equal("exception", h.GetProperty("status").GetString()));
+    }
+
+    [Fact]
+    public async Task Clients_lists_every_client_once_in_order()
+    {
+        fx.RequireCluster();
+        using var http = _app.CreateClient();
+
+        var clients = await http.GetFromJsonAsync<List<string>>(new Uri("/v1/clients", UriKind.Relative), TestContext.Current.CancellationToken);
+
+        Assert.Equal(fx.Payments.Select(p => p.Client).Distinct().Order(StringComparer.Ordinal), clients);
     }
 
     [Fact]

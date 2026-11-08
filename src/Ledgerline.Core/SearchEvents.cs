@@ -10,6 +10,14 @@ public abstract record SearchEvent(long AtMs)
     public abstract string Kind { get; }
 }
 
+/// <summary>The segments about to be searched, in the order their progress will arrive. Always the first event.</summary>
+public sealed record PlanEvent(long AtMs, IReadOnlyList<PlannedSegment> Segments) : SearchEvent(AtMs)
+{
+    public override string Kind => "plan";
+}
+
+public sealed record PlannedSegment(string Label, DateOnly From, DateOnly To);
+
 /// <summary>
 /// The first page as known so far, newest first. It replaces any earlier page event. When
 /// <see cref="Complete"/> is true no later segment can change it: every unsearched document is older.
