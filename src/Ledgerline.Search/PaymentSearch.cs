@@ -8,7 +8,7 @@ using Ledgerline.Core;
 namespace Ledgerline.Search;
 
 /// <summary>Runs one search over one segment of history and returns a page of hits plus totals.</summary>
-public sealed class PaymentSearch(ElasticsearchClient client)
+public sealed class PaymentSearch(ElasticsearchClient client) : ISegmentSearch
 {
     private const string AmountAgg = "amount";
     private const string StatusAgg = "status";
