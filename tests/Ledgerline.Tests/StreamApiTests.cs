@@ -63,6 +63,28 @@ public sealed class StreamApiTests(SearchFixture fx) : IDisposable
         Assert.Contains("failed", events[^1].Data.GetProperty("message").GetString(), StringComparison.Ordinal);
     }
 
+    [Fact]
+    public async Task Closing_the_connection_cancels_the_searches_still_running()
+    {
+        var slow = new SlowColdYears();
+        using var app = _app.WithWebHostBuilder(b => b.ConfigureServices(s => s.AddSingleton<ISegmentSearch>(slow)));
+        using var http = app.CreateClient();
+        var ct = TestContext.Current.CancellationToken;
+
+        using (var response = await http.GetAsync(new Uri("/v1/search/stream", UriKind.Relative), HttpCompletionOption.ResponseHeadersRead, ct))
+        await using (var stream = await response.Content.ReadAsStreamAsync(ct))
+        {
+            var parser = SseParser.Create(stream);
+            await using var e = parser.EnumerateAsync(ct).GetAsyncEnumerator(ct);
+            Assert.True(await e.MoveNextAsync());
+            Assert.Equal("page", e.Current.EventType); // the person sees page 1, then closes the tab
+            await slow.AllStarted.Task.WaitAsync(TimeSpan.FromSeconds(10), ct);
+        }
+
+        await slow.AllCancelled.Task.WaitAsync(TimeSpan.FromSeconds(10), ct);
+        Assert.Equal(3, slow.Cancelled); // the three cold years in flight; none of them ran to the end
+    }
+
     private static async Task<List<SseItem<JsonElement>>> Read(HttpClient http, string url)
     {
         var ct = TestContext.Current.CancellationToken;
@@ -78,6 +100,42 @@ public sealed class StreamApiTests(SearchFixture fx) : IDisposable
     }
 
     private static List<string?> Ids(JsonElement hits) => hits.EnumerateArray().Select(h => h.GetProperty("id").GetString()).ToList();
+
+    /// <summary>The hot tier answers with a full page at once; cold years take a minute unless cancelled.</summary>
+    private sealed class SlowColdYears : ISegmentSearch
+    {
+        private int _started;
+        private int _cancelled;
+
+        public TaskCompletionSource AllStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource AllCancelled { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public int Cancelled => _cancelled;
+
+        public async Task<SearchPage> SearchAsync(PaymentQuery query, Segment segment, int size, CancellationToken ct = default)
+        {
+            if (segment.Label == "hot")
+            {
+                var hit = new Payment
+                {
+                    Id = "hot-1", DepositDate = segment.To, Client = "c", Lockbox = "LB-1000", Payer = "p", CheckNumber = "1",
+                    Amount = 1, Invoices = ["INV-1"], Status = PaymentStatus.Posted, Memo = "",
+                };
+                return new SearchPage { Hits = Enumerable.Repeat(hit, size).ToList(), Totals = Totals.Empty, TookMs = 1 };
+            }
+
+            if (Interlocked.Increment(ref _started) == 3) AllStarted.SetResult();
+            try
+            {
+                await Task.Delay(TimeSpan.FromMinutes(1), ct);
+                throw new InvalidOperationException("a cold year ran to the end instead of being cancelled");
+            }
+            catch (OperationCanceledException)
+            {
+                if (Interlocked.Increment(ref _cancelled) == 3) AllCancelled.SetResult();
+                throw;
+            }
+        }
+    }
 
     /// <summary>The hot tier answers; the first cold year throws, as a lost node would.</summary>
     private sealed class FailsOnColdYears : ISegmentSearch
