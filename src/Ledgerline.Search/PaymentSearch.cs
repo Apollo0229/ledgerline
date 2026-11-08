@@ -47,6 +47,29 @@ public sealed class PaymentSearch(ElasticsearchClient client) : ISegmentSearch
         };
     }
 
+    /// <summary>Every treasury client with payments in <paramref name="segment"/>, by name, for the filter list.</summary>
+    public async Task<IReadOnlyList<string>> ClientsAsync(Segment segment, CancellationToken ct = default)
+    {
+        var response = await client.SearchAsync<Payment>(new SearchRequest(Indices.Parse(string.Join(',', segment.Indices), CultureInfo.InvariantCulture))
+        {
+            IgnoreUnavailable = true,
+            Size = 0,
+            Aggregations = new Dictionary<string, Aggregation>
+            {
+                ["clients"] = new TermsAggregation { Field = new Field("client"), Size = 500 },
+            },
+        }, ct).ConfigureAwait(false);
+        if (!response.IsValidResponse)
+        {
+            throw new InvalidOperationException($"Listing clients failed: {response.DebugInformation}");
+        }
+
+        return response.Aggregations!.GetStringTerms("clients")!.Buckets
+            .Select(b => b.Key.ToString()!)
+            .Order(StringComparer.Ordinal)
+            .ToList();
+    }
+
     /// <summary>The Elasticsearch query for <paramref name="query"/> restricted to <paramref name="segment"/>'s dates.</summary>
     internal static Query Build(PaymentQuery query, Segment segment)
     {
