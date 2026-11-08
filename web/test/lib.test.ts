@@ -125,12 +125,17 @@ describe("format", () => {
   it("keeps cents under $10,000 and compacts above", () => {
     expect(moneyCompact(1_234.5)).toBe("$1,234.50");
     expect(moneyCompact(69_027_222.04)).toBe("$69.0M");
+    expect(moneyCompact(607_812_345)).toBe("$607.8M");
+    expect(moneyCompact(7_872_666_649.2)).toBe("$7.9B");
+    expect(moneyCompact(48_200)).toBe("$48.2K");
   });
 
   it("formats counts, ticks, dates and durations", () => {
     expect(count(9_368)).toBe("9,368");
     expect(tick(5_000)).toBe("5,000");
     expect(tick(20_000)).toBe("20K");
+    expect(tick(300_000)).toBe("300K");
+    expect(tick(2_000_000)).toBe("2M");
     expect(date("2026-11-06")).toBe("Nov 6, 2026");
     expect(duration(15.4)).toBe("15 ms");
     expect(duration(1_250)).toBe("1.3 s");
