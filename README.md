@@ -4,6 +4,8 @@ Fast search over years of lockbox payments. An ASP.NET Core API over Elasticsear
 that answers the first page from the hot tier in milliseconds and streams the rest
 of the answer to a React UI over Server-Sent Events while cold history is searched.
 
+![The Ledgerline portal: filters, running totals, matches by year and the newest payments](docs/portal.png)
+
 > Work in progress. See the milestones below.
 
 ## The problem
@@ -34,14 +36,14 @@ difference can be measured rather than claimed.
 | API | C# / ASP.NET Core (.NET 10), minimal APIs, Server-Sent Events |
 | Search | Elasticsearch 9 (monthly indices, hot and cold tiers) via `Elastic.Clients.Elasticsearch` |
 | Seeder | .NET console app: deterministic synthetic lockbox payments, bulk indexed |
-| UI | React + TypeScript + Vite |
+| Portal | React 19 + TypeScript + Vite + Tailwind 4, served by nginx |
 | Tests | xUnit v3; integration tests against a real Elasticsearch, checked against LINQ over the same data |
 
 ## Milestones
 
 - [x] 1. **Index and seed**: index template, monthly indices, hot/cold tiers, deterministic seeder, baseline search endpoint
 - [x] 2. **Two-phase streamed search**: hot page first, cold years streamed over SSE, cancellation
-- [ ] 3. **Search portal**: React UI with filters, skeletons and live totals
+- [x] 3. **Search portal**: React UI with filters, skeletons and live totals
 - [ ] 4. **Measured**: baseline vs two-phase, time to first result and p95 under load
 - [ ] 5. **Public demo**
 
@@ -61,16 +63,30 @@ difference can be measured rather than claimed.
 
 ## Run it
 
-Needs Docker and the [.NET 10 SDK](https://dotnet.microsoft.com/download).
+Only Docker is needed:
 
 ```sh
-docker compose up -d                                      # Elasticsearch on localhost:9200
-dotnet run -c Release --project src/Ledgerline.Seeder     # 2,000,000 payments, about a minute
-dotnet run -c Release --project src/Ledgerline.Api        # http://localhost:5000
+docker compose up -d --wait
 ```
 
-The seeder takes `--count`, `--today` and `--parallel`; re-running it skips
-months that are already complete.
+Open **http://localhost:8080**. The first start builds the images and seeds
+2,000,000 payments (about a minute; set `SEED_COUNT` for more or fewer). The
+API answers at `http://localhost:8080/v1/...` behind the same nginx.
+
+### From source
+
+Needs the [.NET 10 SDK](https://dotnet.microsoft.com/download) and Node 24.
+
+```sh
+docker compose up -d elasticsearch                        # Elasticsearch on localhost:9200
+dotnet run -c Release --project src/Ledgerline.Seeder     # 2,000,000 payments, about a minute
+dotnet run -c Release --project src/Ledgerline.Api        # http://localhost:5000
+cd web && npm install && npm run dev                      # portal on http://127.0.0.1:5173
+```
+
+The seeder takes `--count`, `--today` and `--parallel`. A month counts as
+complete once it is sealed, so re-running skips finished months and rebuilds
+only missing or interrupted ones; searches keep working while it runs.
 
 ```sh
 curl 'localhost:5000/v1/search?text=INV-244258'
@@ -85,6 +101,24 @@ curl 'localhost:5000/v1/search?client=Meridian%20Freight%20Lines&min=5000&status
 | `min`, `max` | Amount range in dollars |
 | `from`, `to` | Deposit date range, `YYYY-MM-DD` |
 | `size` | Page size, 0 to 200 (default 50) |
+
+## The portal
+
+- **Filters in one row**, date range first (presets or a custom range), then
+  free text, client, status and amount. They are kept in the address bar, so a
+  search can be bookmarked or shared.
+- **Totals that grow as each year reports**, with the time to the first page
+  and to all history, measured in the browser.
+- **Matches by year**, one column per segment with the hot tier on the right.
+  The chart fills in right to left as the stream reports newest first; years
+  not searched yet pulse at the baseline. Every column has a hover and keyboard
+  tooltip with its date span, and a table view holds every value.
+- **The newest page of payments.** Status is an icon plus a label, never color
+  alone. Skeleton rows appear only on the very first search; changing a filter
+  dims the previous results until the new page arrives instead of flashing.
+- Changing a filter closes the stream, which cancels the years still to search.
+  The stream is also closed on `done`, because a browser's `EventSource`
+  otherwise reconnects and silently runs the whole search again.
 
 ## Streamed search
 
@@ -129,7 +163,8 @@ baseline exactly. Timings are measured properly in milestone 4.
 ## Develop
 
 ```sh
-dotnet test
+dotnet test                 # API, search and seeder
+cd web && npm test          # portal: stream reducer, filters, formatting
 ```
 
 Unit tests always run. Integration tests seed 20,000 payments under their own
