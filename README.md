@@ -40,7 +40,7 @@ difference can be measured rather than claimed.
 ## Milestones
 
 - [x] 1. **Index and seed**: index template, monthly indices, hot/cold tiers, deterministic seeder, baseline search endpoint
-- [ ] 2. **Two-phase streamed search**: hot page first, cold years streamed over SSE, cancellation
+- [x] 2. **Two-phase streamed search**: hot page first, cold years streamed over SSE, cancellation
 - [ ] 3. **Search portal**: React UI with filters, skeletons and live totals
 - [ ] 4. **Measured**: baseline vs two-phase, time to first result and p95 under load
 - [ ] 5. **Public demo**
@@ -85,6 +85,44 @@ curl 'localhost:5000/v1/search?client=Meridian%20Freight%20Lines&min=5000&status
 | `min`, `max` | Amount range in dollars |
 | `from`, `to` | Deposit date range, `YYYY-MM-DD` |
 | `size` | Page size, 0 to 200 (default 50) |
+
+## Streamed search
+
+`GET /v1/search/stream` takes the same parameters and answers in stages over
+[Server-Sent Events](https://html.spec.whatwg.org/multipage/server-sent-events.html):
+
+```text
+$ curl -N 'localhost:5000/v1/search/stream?status=returned&min=2000'
+
+event: page        {"hits":[...50 newest...], "complete":true, "at_ms":15}
+event: progress    {"segment":"hot",  "segment_totals":{"count":302,...}, "running":{"count":302,...},  "searched":1, "segments":9}
+event: progress    {"segment":"2026", "segment_totals":{"count":1129,...},"running":{"count":1431,...}, "searched":2, "segments":9}
+...
+event: progress    {"segment":"2019", ...                                  "running":{"count":9368,...}, "searched":9, "segments":9}
+event: done        {"totals":{"count":9368, "amount":69027222.04, ...}, "first_page_ms":15, "at_ms":33}
+```
+
+| Event | When | Meaning |
+| --- | --- | --- |
+| `page` | as soon as there is something to show | The first page so far, newest first; replaces any earlier `page`. `complete: true` means no later segment can change it. |
+| `progress` | after each segment | That segment's totals and the running totals. Segments are the hot tier, then each cold year, newest first. |
+| `done` | at the end | Final totals, equal to what `/v1/search` returns for the same filters. |
+| `error` | if a segment fails mid-stream | The stream ends here; filters are validated before it starts, so bad input is still a `400`. |
+
+How it works:
+
+- **Page 1 is exact early.** If the hot tier has a full page of matches, nothing
+  older can displace it, so it is sent before any cold index is touched. If
+  not, the page is topped up from the newest cold years.
+- **Years run three at a time, applied in order.** An older year that answers
+  first waits its turn, so the page never takes an older match early.
+- **Once the page is full, later years return totals only** (`size: 0`).
+- **Closing the connection stops the work.** Searches in flight are cancelled
+  and the remaining years are never started.
+
+Tests check that, for several kinds of query (hot-heavy, rare, all-cold, free
+text, no matches), the streamed page and totals equal the single-query
+baseline exactly. Timings are measured properly in milestone 4.
 
 ## Develop
 
