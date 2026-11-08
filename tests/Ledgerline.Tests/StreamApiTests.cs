@@ -25,7 +25,7 @@ public sealed class StreamApiTests(SearchFixture fx) : IDisposable
 
         var events = await Read(http, "/v1/search/stream?status=returned&min=2000");
 
-        Assert.Equal("page", events[0].EventType);
+        Assert.Equal(["plan", "page"], events.Take(2).Select(e => e.EventType));
         Assert.Equal("done", events[^1].EventType);
         var segments = events.Where(e => e.EventType == "progress").Select(e => e.Data.GetProperty("segment").GetString());
         Assert.Equal(["hot", "2026", "2025", "2024", "2023", "2022", "2021", "2020", "2019"], segments);
@@ -59,7 +59,7 @@ public sealed class StreamApiTests(SearchFixture fx) : IDisposable
 
         var events = await Read(http, "/v1/search/stream");
 
-        Assert.Equal(["progress", "error"], events.Select(e => e.EventType)); // no page yet: the hot tier had no matches
+        Assert.Equal(["plan", "progress", "error"], events.Select(e => e.EventType)); // no page yet: the hot tier had no matches
         Assert.Contains("failed", events[^1].Data.GetProperty("message").GetString(), StringComparison.Ordinal);
     }
 
@@ -76,6 +76,7 @@ public sealed class StreamApiTests(SearchFixture fx) : IDisposable
         {
             var parser = SseParser.Create(stream);
             await using var e = parser.EnumerateAsync(ct).GetAsyncEnumerator(ct);
+            Assert.True(await e.MoveNextAsync()); // plan
             Assert.True(await e.MoveNextAsync());
             Assert.Equal("page", e.Current.EventType); // the person sees page 1, then closes the tab
             await slow.AllStarted.Task.WaitAsync(TimeSpan.FromSeconds(10), ct);

@@ -94,6 +94,7 @@ curl 'localhost:5000/v1/search?client=Meridian%20Freight%20Lines&min=5000&status
 ```text
 $ curl -N 'localhost:5000/v1/search/stream?status=returned&min=2000'
 
+event: plan        {"segments":[{"label":"hot",...},{"label":"2026",...}, ... {"label":"2019",...}]}
 event: page        {"hits":[...50 newest...], "complete":true, "at_ms":15}
 event: progress    {"segment":"hot",  "segment_totals":{"count":302,...}, "running":{"count":302,...},  "searched":1, "segments":9}
 event: progress    {"segment":"2026", "segment_totals":{"count":1129,...},"running":{"count":1431,...}, "searched":2, "segments":9}
@@ -104,6 +105,7 @@ event: done        {"totals":{"count":9368, "amount":69027222.04, ...}, "first_p
 
 | Event | When | Meaning |
 | --- | --- | --- |
+| `plan` | first | The segments that will be searched, in the order their progress will arrive. |
 | `page` | as soon as there is something to show | The first page so far, newest first; replaces any earlier `page`. `complete: true` means no later segment can change it. |
 | `progress` | after each segment | That segment's totals and the running totals. Segments are the hot tier, then each cold year, newest first. |
 | `done` | at the end | Final totals, equal to what `/v1/search` returns for the same filters. |
