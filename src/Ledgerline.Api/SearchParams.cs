@@ -13,10 +13,14 @@ internal sealed record SearchParams(
     DateOnly? From,
     DateOnly? To,
     int? Size,
-    string? Cold)
+    string? Cold,
+    bool? Years)
 {
     public const int DefaultSize = 50;
     public const int MaxSize = 200;
+
+    /// <summary>Baseline only: also break the totals down by calendar year, as the stream does.</summary>
+    public bool ByYear => Years ?? false;
 
     /// <summary>Stream only: <c>combined</c> (default) or <c>years</c>, how cold history is searched. Kept for measuring.</summary>
     public ColdStrategy? ColdStrategy => Cold?.ToLowerInvariant() switch

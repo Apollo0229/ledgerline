@@ -14,19 +14,28 @@ public sealed class PaymentSearch(ElasticsearchClient client) : ISegmentSearch
     private const string StatusAgg = "status";
     private const string YearsAgg = "years";
 
-    public async Task<SearchPage> SearchAsync(PaymentQuery query, Segment segment, int size, CancellationToken ct = default) =>
-        (await RunAsync(query, segment, size, byYear: false, ct).ConfigureAwait(false)).Page;
-
-    /// <summary>One request over several years that also returns the totals of each calendar year.</summary>
-    public Task<YearSearch> SearchByYearAsync(PaymentQuery query, Segment segment, int size, CancellationToken ct = default) =>
-        RunAsync(query, segment, size, byYear: true, ct);
-
-    private async Task<YearSearch> RunAsync(PaymentQuery query, Segment segment, int size, bool byYear, CancellationToken ct)
+    /// <summary>A page and the segment's totals in one request.</summary>
+    public async Task<SearchPage> SearchAsync(PaymentQuery query, Segment segment, int size, CancellationToken ct = default)
     {
-        var aggregations = TotalsAggregations();
-        if (byYear)
+        var response = await SendAsync(query, segment, size, trackTotal: true, TotalsAggregations(), ct).ConfigureAwait(false);
+        return new SearchPage
         {
-            aggregations[YearsAgg] = new Aggregation
+            Hits = response.Documents.ToList(),
+            Totals = ReadTotals(response.Total, response.Aggregations!),
+            TookMs = response.Took,
+        };
+    }
+
+    /// <summary>
+    /// A page and totals broken down by calendar year, in one request. Only the per-year buckets are
+    /// aggregated and the overall totals are their sum: aggregating both would count every document twice,
+    /// which measured as the most expensive part of the search.
+    /// </summary>
+    public async Task<YearSearch> SearchByYearAsync(PaymentQuery query, Segment segment, int size, CancellationToken ct = default)
+    {
+        var aggregations = new Dictionary<string, Aggregation>
+        {
+            [YearsAgg] = new Aggregation
             {
                 DateHistogram = new DateHistogramAggregation
                 {
@@ -35,16 +44,41 @@ public sealed class PaymentSearch(ElasticsearchClient client) : ISegmentSearch
                     MinDocCount = 1,
                 },
                 Aggregations = TotalsAggregations(),
-            };
-        }
+            },
+        };
+        var response = await SendAsync(query, segment, size, trackTotal: false, aggregations, ct).ConfigureAwait(false);
 
+        var years = response.Aggregations!.GetDateHistogram(YearsAgg)!.Buckets
+            .ToDictionary(b => b.Key.UtcDateTime.Year, b => ReadTotals(b.DocCount, b.Aggregations!));
+        var page = new SearchPage
+        {
+            Hits = response.Documents.ToList(),
+            Totals = years.Values.Aggregate(Totals.Empty, (all, y) => all.Add(y)),
+            TookMs = response.Took,
+        };
+        return new YearSearch(page, years);
+    }
+
+    /// <summary>
+    /// Only the newest <paramref name="size"/> matches: no totals and no aggregations, so Elasticsearch can stop
+    /// as soon as it has them. Used to top up a page when the hot tier had too few matches.
+    /// </summary>
+    public async Task<IReadOnlyList<Payment>> PageAsync(PaymentQuery query, Segment segment, int size, CancellationToken ct = default)
+    {
+        var response = await SendAsync(query, segment, size, trackTotal: false, aggregations: null, ct).ConfigureAwait(false);
+        return response.Documents.ToList();
+    }
+
+    private async Task<SearchResponse<Payment>> SendAsync(
+        PaymentQuery query, Segment segment, int size, bool trackTotal, Dictionary<string, Aggregation>? aggregations, CancellationToken ct)
+    {
         var request = new SearchRequest(Indices.Parse(string.Join(',', segment.Indices), CultureInfo.InvariantCulture))
         {
             IgnoreUnavailable = true, // months with no deposits have no index
             Query = Build(query, segment),
             Size = size,
             Sort = [Newest("deposit_date"), Newest("id")],
-            TrackTotalHits = new TrackHits(true),
+            TrackTotalHits = new TrackHits(trackTotal),
             Aggregations = aggregations,
         };
 
@@ -53,18 +87,7 @@ public sealed class PaymentSearch(ElasticsearchClient client) : ISegmentSearch
         {
             throw new InvalidOperationException($"Search over {segment.Label} failed: {response.DebugInformation}");
         }
-
-        var page = new SearchPage
-        {
-            Hits = response.Documents.ToList(),
-            Totals = ReadTotals(response.Total, response.Aggregations!),
-            TookMs = response.Took,
-        };
-        var years = byYear
-            ? response.Aggregations!.GetDateHistogram(YearsAgg)!.Buckets
-                .ToDictionary(b => b.Key.UtcDateTime.Year, b => ReadTotals(b.DocCount, b.Aggregations!))
-            : new Dictionary<int, Totals>();
-        return new YearSearch(page, years);
+        return response;
     }
 
     /// <summary>Sum of amounts and count per status; used for the whole segment and inside each year.</summary>

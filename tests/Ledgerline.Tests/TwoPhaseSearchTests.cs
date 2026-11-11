@@ -108,6 +108,28 @@ public class TwoPhaseSearchTests
     }
 
     [Fact]
+    public async Task Combined_counts_cold_history_without_fetching_a_page_it_does_not_need()
+    {
+        var fake = new FakeSearch { Matches = Order.ToDictionary(s => s, _ => 100) };
+
+        await Run(fake, 50, ColdStrategy.Combined);
+
+        Assert.Equal(0, fake.Sizes["cold"]);
+        Assert.DoesNotContain("cold-page", fake.Started);
+    }
+
+    [Fact]
+    public async Task Combined_tops_up_a_short_hot_page_with_one_page_only_request_for_what_is_missing()
+    {
+        var fake = new FakeSearch { Matches = new() { ["hot"] = 10, ["2026"] = 15, ["2025"] = 40 } };
+
+        await Run(fake, 50, ColdStrategy.Combined);
+
+        Assert.Equal(["cold", "cold-page", "hot"], fake.Started.Order());
+        Assert.Equal(40, fake.Sizes["cold-page"]);
+    }
+
+    [Fact]
     public async Task Combined_sends_the_hot_page_without_waiting_for_cold_history()
     {
         var fake = new FakeSearch { Matches = Order.ToDictionary(s => s, _ => 100), DelayMs = new() { ["cold"] = 300 } };
@@ -214,6 +236,15 @@ public class TwoPhaseSearchTests
             return new YearSearch(
                 new SearchPage { Hits = years.SelectMany(y => y.Page.Hits).Take(size).ToList(), Totals = all, TookMs = 1 },
                 years.Where(y => y.Page.Totals.Count > 0).ToDictionary(y => y.Year, y => y.Page.Totals)); // like min_doc_count 1
+        }
+
+        public async Task<IReadOnlyList<Payment>> PageAsync(PaymentQuery query, Segment segment, int size, CancellationToken ct = default)
+        {
+            await Begin($"{segment.Label}-page", size, ct);
+            return Enumerable.Range(segment.From.Year, segment.To.Year - segment.From.Year + 1).Reverse()
+                .SelectMany(y => Page(y.ToString(CultureInfo.InvariantCulture), new DateOnly(y, 12, 31), size).Hits)
+                .Take(size)
+                .ToList();
         }
 
         private async Task Begin(string label, int size, CancellationToken ct)

@@ -11,14 +11,18 @@ public interface ISegmentSearch
 
     /// <summary>One request over several years, with totals broken down by calendar year.</summary>
     Task<YearSearch> SearchByYearAsync(PaymentQuery query, Segment segment, int size, CancellationToken ct = default);
+
+    /// <summary>Only the newest matches, without totals, which is far cheaper than a search with them.</summary>
+    Task<IReadOnlyList<Payment>> PageAsync(PaymentQuery query, Segment segment, int size, CancellationToken ct = default);
 }
 
 /// <summary>How cold history is searched once the hot tier has answered.</summary>
 public enum ColdStrategy
 {
     /// <summary>
-    /// One request for all cold years, with a per-year breakdown. Two requests per search in total, so it
-    /// costs the cluster about what a single plain query does. The default: see the measurements in the README.
+    /// One request that counts all cold years, broken down by year, alongside the hot tier; a third, cheap
+    /// page-only request only when the hot tier is short of a page. It costs the cluster about what one
+    /// plain query with the same per-year breakdown does. The default: see the measurements in the README.
     /// </summary>
     Combined,
 
@@ -84,17 +88,20 @@ public sealed class TwoPhaseSearch(ISegmentSearch search, IndexLayout layout, Ti
         }
         else
         {
-            // Hot and cold run side by side; each year's result is read from the single cold response.
-            // All cold hits go to the newest year, which is where the page continues after the hot tier.
+            // The hot tier and the counts for all cold years run side by side; each year's result is read from
+            // the one cold response. The cold side fetches no page: the hot tier usually fills it, and when it
+            // does not, the newest year asks a page-only request for exactly what is missing.
+            var hotTask = hotSegment is null ? null : search.SearchAsync(query, hotSegment, size, cts.Token);
             var coldAll = years.Count == 0 ? null : new Segment(
                 "cold", years[^1].From, years[0].To, [.. years.SelectMany(y => y.Indices)]);
-            var coldTask = coldAll is null ? null : search.SearchByYearAsync(query, coldAll, size, cts.Token);
+            var coldTask = coldAll is null ? null : search.SearchByYearAsync(query, coldAll, 0, cts.Token);
             start = i =>
             {
                 var segment = segments[i];
-                if (segment == hotSegment) return search.SearchAsync(query, segment, size, cts.Token);
+                if (segment == hotSegment) return hotTask!;
                 var year = int.Parse(segment.Label, CultureInfo.InvariantCulture);
-                return YearOf(coldTask!, year, first: segment == years[0]);
+                var page = segment == years[0] ? TopUp(hotTask, query, coldAll!, size, cts.Token) : null;
+                return YearOf(coldTask!, year, page);
             };
             limit = segments.Count;
         }
@@ -143,13 +150,20 @@ public sealed class TwoPhaseSearch(ISegmentSearch search, IndexLayout layout, Ti
         }
     }
 
-    /// <summary>One year's share of the combined cold search: its totals, plus the hits if it is the newest year.</summary>
-    private static async Task<SearchPage> YearOf(Task<YearSearch> cold, int year, bool first)
+    /// <summary>The cold matches needed to finish the page: none if the hot tier already filled it.</summary>
+    private async Task<IReadOnlyList<Payment>> TopUp(Task<SearchPage>? hot, PaymentQuery query, Segment cold, int size, CancellationToken ct)
+    {
+        var have = hot is null ? 0 : (await hot.ConfigureAwait(false)).Hits.Count;
+        return have >= size ? [] : await search.PageAsync(query, cold, size - have, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>One year's share of the combined cold search: its totals, plus the page top-up if it is the newest year.</summary>
+    private static async Task<SearchPage> YearOf(Task<YearSearch> cold, int year, Task<IReadOnlyList<Payment>>? page)
     {
         var all = await cold.ConfigureAwait(false);
         return new SearchPage
         {
-            Hits = first ? all.Page.Hits : [],
+            Hits = page is null ? [] : await page.ConfigureAwait(false),
             Totals = all.ByYear.GetValueOrDefault(year, Totals.Empty),
             TookMs = all.Page.TookMs,
         };

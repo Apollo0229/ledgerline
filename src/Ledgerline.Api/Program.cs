@@ -1,3 +1,4 @@
+using System.Globalization;
 using Ledgerline.Api;
 using Ledgerline.Core;
 using Ledgerline.Search;
@@ -29,10 +30,20 @@ v1.MapGet("/search", async ([AsParameters] SearchParams p, PaymentSearch search,
     if (p.Validate() is { } problem) return Results.ValidationProblem(problem);
 
     var query = p.ToQuery();
+    var size = p.Size ?? SearchParams.DefaultSize;
     var segment = layout.All(query.From, query.To);
     if (segment is null) return Results.Ok(new SearchPage { Hits = [], Totals = Totals.Empty, TookMs = 0 });
+    if (!p.ByYear) return Results.Ok(await search.SearchAsync(query, segment, size, ct));
 
-    return Results.Ok(await search.SearchAsync(query, segment, p.Size ?? SearchParams.DefaultSize, ct));
+    // The same information the stream delivers, in one response: the fair comparison for the stream.
+    var years = await search.SearchByYearAsync(query, segment, size, ct);
+    return Results.Ok(new
+    {
+        years.Page.Hits,
+        years.Page.Totals,
+        years.Page.TookMs,
+        ByYear = years.ByYear.OrderByDescending(y => y.Key).ToDictionary(y => y.Key.ToString(CultureInfo.InvariantCulture), y => y.Value),
+    });
 });
 
 v1.MapGet("/clients", async (PaymentSearch search, IndexLayout layout, CancellationToken ct) =>

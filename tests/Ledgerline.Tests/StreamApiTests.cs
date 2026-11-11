@@ -134,6 +134,12 @@ public sealed class StreamApiTests(SearchFixture fx) : IDisposable
             throw new InvalidOperationException("unreachable");
         }
 
+        public async Task<IReadOnlyList<Payment>> PageAsync(PaymentQuery query, Segment segment, int size, CancellationToken ct = default)
+        {
+            await SlowColdAsync(ct);
+            throw new InvalidOperationException("unreachable");
+        }
+
         private async Task SlowColdAsync(CancellationToken ct)
         {
             if (Interlocked.Increment(ref _started) == 1) AllStarted.SetResult();
@@ -160,5 +166,8 @@ public sealed class StreamApiTests(SearchFixture fx) : IDisposable
 
         public Task<YearSearch> SearchByYearAsync(PaymentQuery query, Segment segment, int size, CancellationToken ct = default) =>
             Task.FromException<YearSearch>(new InvalidOperationException("node lost"));
+
+        public Task<IReadOnlyList<Payment>> PageAsync(PaymentQuery query, Segment segment, int size, CancellationToken ct = default) =>
+            Task.FromException<IReadOnlyList<Payment>>(new InvalidOperationException("node lost"));
     }
 }

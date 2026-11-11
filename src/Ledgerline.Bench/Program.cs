@@ -60,6 +60,7 @@ async Task<List<SingleResult>> RunSingle(bool cold)
     foreach (var s in scenarios)
     {
         await bench.BaselineAsync(s.Query);
+        await bench.BaselineAsync(s.Query, years: true);
         foreach (var c in Streams) await bench.StreamAsync(s.Query, c);
     }
 
@@ -67,23 +68,30 @@ async Task<List<SingleResult>> RunSingle(bool cold)
     foreach (var s in scenarios)
     {
         var baseline = new List<double>();
+        var fair = new List<double>();
         var streams = Streams.ToDictionary(c => c, _ => new List<Timing>());
         for (var i = 0; i < runs; i++)
         {
             // Rotate which goes first, so none always benefits from another's leftovers.
-            for (var k = 0; k < 3; k++)
+            for (var k = 0; k < 4; k++)
             {
                 if (cold) await Caches.DropAsync(http, elastic);
-                var which = (i + k) % 3;
-                if (which == 0) baseline.Add(await bench.BaselineAsync(s.Query));
-                else streams[Streams[which - 1]].Add(await bench.StreamAsync(s.Query, Streams[which - 1]));
+                switch ((i + k) % 4)
+                {
+                    case 0: baseline.Add(await bench.BaselineAsync(s.Query)); break;
+                    case 1: fair.Add(await bench.BaselineAsync(s.Query, years: true)); break;
+                    default:
+                        var c = Streams[(i + k) % 4 - 2];
+                        streams[c].Add(await bench.StreamAsync(s.Query, c));
+                        break;
+                }
             }
         }
 
-        var r = new SingleResult(s.Name, s.Query, Stats.Of(baseline),
+        var r = new SingleResult(s.Name, s.Query, Stats.Of(baseline), Stats.Of(fair),
             StreamStats.Of(streams["combined"]), StreamStats.Of(streams["years"]), streams["combined"][0].Matches);
         results.Add(r);
-        Console.WriteLine($"{s.Name,-30} baseline {r.Baseline.P50,6:F1} | combined page {r.Combined.ExactPage.P50,6:F1} done {r.Combined.Done.P50,6:F1} | years page {r.Years.ExactPage.P50,6:F1} done {r.Years.Done.P50,6:F1} ms (p50, {r.Matches:N0} matches)");
+        Console.WriteLine($"{s.Name,-30} plain {r.Baseline.P50,6:F1} | +years {r.BaselineWithYears.P50,6:F1} | combined page {r.Combined.ExactPage.P50,6:F1} done {r.Combined.Done.P50,6:F1} | per-year page {r.Years.ExactPage.P50,6:F1} done {r.Years.Done.P50,6:F1} ms (p50, {r.Matches:N0} matches)");
     }
     return results;
 }
@@ -91,7 +99,7 @@ async Task<List<SingleResult>> RunSingle(bool cold)
 async Task<List<LoadResult>> RunLoad()
 {
     var results = new List<LoadResult>();
-    foreach (var endpoint in new[] { "baseline", "combined", "years" })
+    foreach (var endpoint in new[] { "baseline", "baseline+years", "combined", "years" })
     {
         await RunFor(endpoint, TimeSpan.FromSeconds(5), new List<double>(), new List<Timing>()); // warm-up, discarded
         var baseline = new List<double>();
@@ -100,11 +108,11 @@ async Task<List<LoadResult>> RunLoad()
         await RunFor(endpoint, TimeSpan.FromSeconds(seconds), baseline, stream);
         var elapsed = clock.Elapsed.TotalSeconds;
 
-        var r = endpoint == "baseline"
+        var r = endpoint.StartsWith("baseline", StringComparison.Ordinal)
             ? new LoadResult(endpoint, users, baseline.Count / elapsed, Stats.Of(baseline), Stats.Of(baseline))
             : new LoadResult(endpoint, users, stream.Count / elapsed, Stats.Of(stream.Select(t => t.ExactPageMs)), Stats.Of(stream.Select(t => t.DoneMs)));
         results.Add(r);
-        Console.WriteLine($"{endpoint,-8} {users} users: {r.RequestsPerSecond,6:F0} searches/s | page p50 {r.Page.P50,7:F1} p95 {r.Page.P95,7:F1} | complete p50 {r.Complete.P50,7:F1} p95 {r.Complete.P95,7:F1} ms");
+        Console.WriteLine($"{endpoint,-14} {users} users: {r.RequestsPerSecond,6:F0} searches/s | page p50 {r.Page.P50,7:F1} p95 {r.Page.P95,7:F1} | complete p50 {r.Complete.P50,7:F1} p95 {r.Complete.P95,7:F1} ms");
     }
     return results;
 }
@@ -118,9 +126,9 @@ async Task RunFor(string endpoint, TimeSpan duration, List<double> baseline, Lis
         for (var n = user; DateTime.UtcNow < until; n++)
         {
             var query = scenarios[n % scenarios.Count].Query;
-            if (endpoint == "baseline")
+            if (endpoint.StartsWith("baseline", StringComparison.Ordinal))
             {
-                var ms = await bench.BaselineAsync(query);
+                var ms = await bench.BaselineAsync(query, years: endpoint == "baseline+years");
                 lock (baseline) baseline.Add(ms);
             }
             else
@@ -159,10 +167,10 @@ internal sealed record Timing(double FirstPageMs, double ExactPageMs, double Don
 internal sealed class Bench(HttpClient http)
 {
     /// <summary>One plain query: the page and the totals arrive together, so this is both time to first result and to all of it.</summary>
-    public async Task<double> BaselineAsync(string query)
+    public async Task<double> BaselineAsync(string query, bool years = false)
     {
         var clock = Stopwatch.StartNew();
-        using var response = await http.GetAsync(new Uri($"v1/search?{query}", UriKind.Relative));
+        using var response = await http.GetAsync(new Uri($"v1/search?{query}{(years ? "&years=true" : "")}", UriKind.Relative));
         response.EnsureSuccessStatusCode();
         await response.Content.ReadAsByteArrayAsync();
         return clock.Elapsed.TotalMilliseconds;
@@ -258,7 +266,8 @@ internal sealed record StreamStats(Stats FirstPage, Stats ExactPage, Stats Done)
         new(Stats.Of(t.Select(x => x.FirstPageMs)), Stats.Of(t.Select(x => x.ExactPageMs)), Stats.Of(t.Select(x => x.DoneMs)));
 }
 
-internal sealed record SingleResult(string Scenario, string Query, Stats Baseline, StreamStats Combined, StreamStats Years, long Matches);
+internal sealed record SingleResult(
+    string Scenario, string Query, Stats Baseline, Stats BaselineWithYears, StreamStats Combined, StreamStats Years, long Matches);
 
 internal sealed record LoadResult(string Endpoint, int Users, double RequestsPerSecond, Stats Page, Stats Complete);
 
