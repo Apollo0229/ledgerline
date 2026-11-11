@@ -22,12 +22,14 @@ already holds a full page of matches, that page is the **exact** first page of t
 whole answer, because every cold document is older. Ledgerline:
 
 1. searches the hot tier and streams page 1 at once,
-2. searches cold history year by year, newest first, streaming running totals
-   (count, sum, status breakdown) as each year finishes,
+2. counts all of cold history in one request alongside it, broken down by year,
+   and streams those totals (count, sum, status breakdown) newest year first,
 3. stops early when the person cancels or changes the query.
 
 The baseline, one query across every index, is kept as an endpoint so the
-difference can be measured rather than claimed.
+difference is [measured](#results) rather than claimed. At 20 million payments
+under load, page 1 arrives **2–6× sooner** at the 50th and 95th percentile and
+the cluster serves **30–40% more searches per second**.
 
 ## Stack
 
@@ -44,7 +46,7 @@ difference can be measured rather than claimed.
 - [x] 1. **Index and seed**: index template, monthly indices, hot/cold tiers, deterministic seeder, baseline search endpoint
 - [x] 2. **Two-phase streamed search**: hot page first, cold years streamed over SSE, cancellation
 - [x] 3. **Search portal**: React UI with filters, skeletons and live totals
-- [ ] 4. **Measured**: baseline vs two-phase, time to first result and p95 under load
+- [x] 4. **Measured**: baseline vs two-phase, time to first result and p95 under load
 - [ ] 5. **Public demo**
 
 ## How the data is laid out
@@ -148,17 +150,116 @@ event: done        {"totals":{"count":9368, "amount":69027222.04, ...}, "first_p
 How it works:
 
 - **Page 1 is exact early.** If the hot tier has a full page of matches, nothing
-  older can displace it, so it is sent before any cold index is touched. If
-  not, the page is topped up from the newest cold years.
-- **Years run three at a time, applied in order.** An older year that answers
-  first waits its turn, so the page never takes an older match early.
-- **Once the page is full, later years return totals only** (`size: 0`).
-- **Closing the connection stops the work.** Searches in flight are cancelled
-  and the remaining years are never started.
+  older can displace it, so it is sent while cold history is still being counted.
+- **Cold history is counted, not paged.** One request aggregates per-year
+  buckets only (`size: 0`; overall totals are their sum) and is broken down into
+  one `progress` event per year, newest first.
+- **A short page is topped up separately.** When the hot tier has fewer matches
+  than a page, a page-only request (no totals, no aggregations) fetches exactly
+  the missing rows from all cold history, and the page is sent as soon as it
+  returns, without waiting for the counts.
+- **Cold searches are rationed.** At most `COLD_CONCURRENCY` (default 16) cold
+  requests run at once across all users; hot-tier searches are never held back,
+  so first pages do not queue behind counting under load.
+- **Closing the connection stops the work.** Searches in flight are cancelled.
+
+The original design, one request per cold year, three at a time, is still
+available as `?cold=years` for comparison; [Results](#results) shows why it is
+not the default.
 
 Tests check that, for several kinds of query (hot-heavy, rare, all-cold, free
-text, no matches), the streamed page and totals equal the single-query
-baseline exactly. Timings are measured properly in milestone 4.
+text, no matches) and both strategies, the streamed page and totals, and each
+year's totals, equal plain searches exactly.
+
+## Results
+
+Measured on one laptop (20 logical CPUs, NVMe SSD) with the whole stack in
+Docker: a single-node Elasticsearch 9.5.5 with a 2 GB heap, the API and nginx.
+The [benchmark tool](src/Ledgerline.Bench/Program.cs) times requests through
+nginx as a browser would, over seven queries from broad ("everything") to a
+needle (one 2021 invoice number). Raw numbers: [`docs/bench`](docs/bench).
+
+Two baselines, because the stream delivers more than a plain search:
+
+- **Plain**: `/v1/search`, page and totals in one request.
+- **Fair**: `/v1/search?years=true`, the same page, totals *and* per-year
+  breakdown the stream delivers, in one request. Two-phase is compared to this.
+
+"Page" is the first *exact* page (identical to the baseline's), not an earlier
+partial one; "complete" is when every total has arrived.
+
+### 20 million payments (3.3 GB), under load
+
+| | Searches/s | Page p50 | Page p95 | Complete p50 | Complete p95 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 16 users, fair baseline | 166 | 88 ms | 161 ms | 88 ms | 161 ms |
+| 16 users, **two-phase** | **236** | **46 ms** | **122 ms** | **61 ms** | **123 ms** |
+| 16 users, per-year (`cold=years`) | 95 | 59 ms | 192 ms | 150 ms | 305 ms |
+| 64 users, fair baseline | 178 | 376 ms | 492 ms | 376 ms | 492 ms |
+| 64 users, **two-phase** | **231** | **60 ms** | **157 ms** | **275 ms** | **344 ms** |
+| 64 users, per-year (`cold=years`) | 94 | 60 ms | 732 ms | 692 ms | 982 ms |
+
+At this size two-phase also serves **more** searches: the baseline sorts a page
+out of all 20 million documents, while the cold request only counts.
+
+### 20 million payments, one user, caches dropped before every request
+
+Elasticsearch's caches cleared and the page cache of Docker's VM dropped
+before each request (p50 of 5 runs).
+
+| Query | Matches | Fair baseline | Two-phase page | Two-phase complete |
+| --- | ---: | ---: | ---: | ---: |
+| Everything, newest first | 20,000,000 | 171 ms | **41 ms** | 162 ms |
+| One client over $5,000 | 881,813 | 46 ms | **15 ms** | 38 ms |
+| Free text "Supply" | 3,037,377 | 54 ms | **19 ms** | 49 ms |
+| Exceptions over $5,000 | 145,072 | 36 ms | **13 ms** | 32 ms |
+| Returned items over $20,000 | 5,441 | 23 ms | **11 ms** | 26 ms |
+| Needle: one 2021 invoice | 35 | 26 ms | 29 ms | 29 ms |
+| Only 2021 (no hot tier) | 2,342,595 | 27 ms | **15 ms** | 30 ms |
+
+**Where it does not help: needle queries.** When almost nothing matches in the
+hot tier, the page needs cold history anyway, and two-phase pays for the hot
+search, a page query and the counts: 29 ms against 26 ms (and 20 ms for the
+plain search without a per-year breakdown).
+
+### 2 million payments (304 MB)
+
+At this size the data is small enough that cold and warm caches measure the
+same, and 64 users saturate the laptop: two-phase gets page 1 out **3.9×
+sooner** at the median (53 against 205 ms) and **2.2×** at p95 (130 against
+283 ms), but serves 15% fewer searches than the fair baseline and its complete
+p95 is 15% slower. Full tables: [`docs/bench/2m`](docs/bench/2m).
+
+### How the design got here
+
+The first version streamed one request per cold year, and the first load test
+showed it serving **40% fewer searches** than a single query. Each fix was
+measured before the next:
+
+1. **Fewer requests barely helped.** One request for all cold years with a
+   per-year `date_histogram` went from 250 to 257 searches/s.
+2. **Profiling each request shape inside Elasticsearch** found the real cost:
+   the cold request aggregated every document twice (per year *and* overall)
+   and sorted a page the hot tier had usually filled. Counting only per-year
+   buckets and fetching no page brought hot plus cold to about the cost of one
+   request with the same breakdown.
+3. **Under saturation, first pages queued behind counting.** Capping concurrent
+   cold searches (admission control) took page p95 at 64 users from worse than
+   the baseline to better; a cap of 4 was too strict, 16 was right here.
+4. **At 20 million payments** the same design serves more searches than the
+   baseline, not fewer.
+
+### Reproduce
+
+```sh
+SEED_COUNT=20000000 docker compose up -d --wait   # or the default 2,000,000
+dotnet run -c Release --project src/Ledgerline.Bench -- warm --runs 20
+dotnet run -c Release --project src/Ledgerline.Bench -- cold --runs 5     # needs Docker; drops caches
+dotnet run -c Release --project src/Ledgerline.Bench -- load --users 64 --seconds 30
+```
+
+The seeder keeps completed months, so changing `SEED_COUNT` needs a fresh
+volume (`docker compose down -v`).
 
 ## Develop
 
