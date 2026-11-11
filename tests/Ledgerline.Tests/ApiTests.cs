@@ -21,6 +21,7 @@ public sealed class ApiTests(SearchFixture fx) : IDisposable
     [InlineData("from=2025-02-01&to=2025-01-01", "to")]
     [InlineData("size=500", "size")]
     [InlineData("status=bounced", "status")]
+    [InlineData("cold=fastest", "cold")]
     public async Task Invalid_filters_are_rejected_with_a_named_field(string query, string field)
     {
         using var http = _app.CreateClient();

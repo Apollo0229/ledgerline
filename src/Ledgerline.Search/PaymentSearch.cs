@@ -12,9 +12,32 @@ public sealed class PaymentSearch(ElasticsearchClient client) : ISegmentSearch
 {
     private const string AmountAgg = "amount";
     private const string StatusAgg = "status";
+    private const string YearsAgg = "years";
 
-    public async Task<SearchPage> SearchAsync(PaymentQuery query, Segment segment, int size, CancellationToken ct = default)
+    public async Task<SearchPage> SearchAsync(PaymentQuery query, Segment segment, int size, CancellationToken ct = default) =>
+        (await RunAsync(query, segment, size, byYear: false, ct).ConfigureAwait(false)).Page;
+
+    /// <summary>One request over several years that also returns the totals of each calendar year.</summary>
+    public Task<YearSearch> SearchByYearAsync(PaymentQuery query, Segment segment, int size, CancellationToken ct = default) =>
+        RunAsync(query, segment, size, byYear: true, ct);
+
+    private async Task<YearSearch> RunAsync(PaymentQuery query, Segment segment, int size, bool byYear, CancellationToken ct)
     {
+        var aggregations = TotalsAggregations();
+        if (byYear)
+        {
+            aggregations[YearsAgg] = new Aggregation
+            {
+                DateHistogram = new DateHistogramAggregation
+                {
+                    Field = new Field("deposit_date"),
+                    CalendarInterval = CalendarInterval.Year,
+                    MinDocCount = 1,
+                },
+                Aggregations = TotalsAggregations(),
+            };
+        }
+
         var request = new SearchRequest(Indices.Parse(string.Join(',', segment.Indices), CultureInfo.InvariantCulture))
         {
             IgnoreUnavailable = true, // months with no deposits have no index
@@ -22,11 +45,7 @@ public sealed class PaymentSearch(ElasticsearchClient client) : ISegmentSearch
             Size = size,
             Sort = [Newest("deposit_date"), Newest("id")],
             TrackTotalHits = new TrackHits(true),
-            Aggregations = new Dictionary<string, Aggregation>
-            {
-                [AmountAgg] = new SumAggregation { Field = new Field("amount") },
-                [StatusAgg] = new TermsAggregation { Field = new Field("status"), Size = 10 },
-            },
+            Aggregations = aggregations,
         };
 
         var response = await client.SearchAsync<Payment>(request, ct).ConfigureAwait(false);
@@ -35,16 +54,32 @@ public sealed class PaymentSearch(ElasticsearchClient client) : ISegmentSearch
             throw new InvalidOperationException($"Search over {segment.Label} failed: {response.DebugInformation}");
         }
 
-        var byStatus = response.Aggregations!.GetStringTerms(StatusAgg)!.Buckets
-            .ToDictionary(b => Enum.Parse<PaymentStatus>(b.Key.ToString()!, ignoreCase: true), b => b.DocCount);
-        var amount = (decimal)(response.Aggregations!.GetSum(AmountAgg)!.Value ?? 0);
-
-        return new SearchPage
+        var page = new SearchPage
         {
             Hits = response.Documents.ToList(),
-            Totals = new Totals(response.Total, Math.Round(amount, 2), byStatus),
+            Totals = ReadTotals(response.Total, response.Aggregations!),
             TookMs = response.Took,
         };
+        var years = byYear
+            ? response.Aggregations!.GetDateHistogram(YearsAgg)!.Buckets
+                .ToDictionary(b => b.Key.UtcDateTime.Year, b => ReadTotals(b.DocCount, b.Aggregations!))
+            : new Dictionary<int, Totals>();
+        return new YearSearch(page, years);
+    }
+
+    /// <summary>Sum of amounts and count per status; used for the whole segment and inside each year.</summary>
+    private static Dictionary<string, Aggregation> TotalsAggregations() => new()
+    {
+        [AmountAgg] = new SumAggregation { Field = new Field("amount") },
+        [StatusAgg] = new TermsAggregation { Field = new Field("status"), Size = 10 },
+    };
+
+    private static Totals ReadTotals(long count, AggregateDictionary aggregations)
+    {
+        var byStatus = aggregations.GetStringTerms(StatusAgg)!.Buckets
+            .ToDictionary(b => Enum.Parse<PaymentStatus>(b.Key.ToString()!, ignoreCase: true), b => b.DocCount);
+        var amount = (decimal)(aggregations.GetSum(AmountAgg)!.Value ?? 0);
+        return new Totals(count, Math.Round(amount, 2), byStatus);
     }
 
     /// <summary>Every treasury client with payments in <paramref name="segment"/>, by name, for the filter list.</summary>

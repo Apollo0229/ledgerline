@@ -1,4 +1,5 @@
 using Ledgerline.Core;
+using Ledgerline.Search;
 
 namespace Ledgerline.Api;
 
@@ -11,14 +12,25 @@ internal sealed record SearchParams(
     decimal? Max,
     DateOnly? From,
     DateOnly? To,
-    int? Size)
+    int? Size,
+    string? Cold)
 {
     public const int DefaultSize = 50;
     public const int MaxSize = 200;
 
+    /// <summary>Stream only: <c>combined</c> (default) or <c>years</c>, how cold history is searched. Kept for measuring.</summary>
+    public ColdStrategy? ColdStrategy => Cold?.ToLowerInvariant() switch
+    {
+        null => null,
+        "combined" => Ledgerline.Search.ColdStrategy.Combined,
+        "years" => Ledgerline.Search.ColdStrategy.PerYear,
+        _ => null,
+    };
+
     public Dictionary<string, string[]>? Validate()
     {
         var errors = new Dictionary<string, string[]>();
+        if (Cold is not null && ColdStrategy is null) errors["cold"] = ["cold must be combined or years."];
         if (Status is not null && ParseStatus(Status) is null)
         {
             errors["status"] = [$"status must be one of: {string.Join(", ", Enum.GetNames<PaymentStatus>().Select(n => n.ToLowerInvariant()))}."];
