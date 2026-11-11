@@ -1,6 +1,7 @@
 <Solution>
   <Folder Name="/src/">
     <Project Path="src/Ledgerline.Api/Ledgerline.Api.csproj" />
+    <Project Path="src/Ledgerline.Bench/Ledgerline.Bench.csproj" />
     <Project Path="src/Ledgerline.Core/Ledgerline.Core.csproj" />
     <Project Path="src/Ledgerline.Search/Ledgerline.Search.csproj" />
     <Project Path="src/Ledgerline.Seeder/Ledgerline.Seeder.csproj" />
