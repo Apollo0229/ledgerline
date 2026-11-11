@@ -33,6 +33,8 @@ services:
     build: { context: ., target: api }
     environment:
       Elasticsearch__Url: http://elasticsearch:9200
+      # About half of Elasticsearch's search threads on the benchmark laptop; see the README measurements.
+      Search__ColdConcurrency: ${COLD_CONCURRENCY:-16}
     depends_on:
       elasticsearch: { condition: service_healthy }
     healthcheck:

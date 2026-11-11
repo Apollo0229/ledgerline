@@ -51,6 +51,23 @@ public sealed class TwoPhaseSearch(ISegmentSearch search, IndexLayout layout, Ti
 
     public ColdStrategy Cold { get; init; } = ColdStrategy.Combined;
 
+    private readonly int? _coldConcurrency;
+    private readonly SemaphoreSlim? _coldGate;
+
+    /// <summary>
+    /// How many cold searches may run at once across all callers, or null for no limit. Hot searches are
+    /// never held back, so under load the first page does not queue behind cold history being counted.
+    /// </summary>
+    public int? ColdConcurrency
+    {
+        get => _coldConcurrency;
+        init
+        {
+            _coldConcurrency = value;
+            _coldGate = value is { } n ? new SemaphoreSlim(n, n) : null;
+        }
+    }
+
     public IAsyncEnumerable<SearchEvent> RunAsync(PaymentQuery query, int size, CancellationToken ct = default) =>
         RunAsync(query, size, Cold, ct);
 
@@ -81,28 +98,31 @@ public sealed class TwoPhaseSearch(ISegmentSearch search, IndexLayout layout, Ti
         // page is full, later per-year searches only need totals.
         Func<int, Task<SearchPage>> start;
         int limit;
+        Task<IReadOnlyList<Payment>>? topUp = null; // Combined only: the rest of the page from all cold history
         if (cold == ColdStrategy.PerYear)
         {
-            start = i => search.SearchAsync(query, segments[i], hits.Count >= size ? 0 : size, cts.Token);
+            start = i =>
+            {
+                var pageSize = hits.Count >= size ? 0 : size;
+                return segments[i] == hotSegment
+                    ? search.SearchAsync(query, segments[i], pageSize, cts.Token)
+                    : Gated(() => search.SearchAsync(query, segments[i], pageSize, cts.Token), cts.Token);
+            };
             limit = Parallelism;
         }
         else
         {
             // The hot tier and the counts for all cold years run side by side; each year's result is read from
             // the one cold response. The cold side fetches no page: the hot tier usually fills it, and when it
-            // does not, the newest year asks a page-only request for exactly what is missing.
+            // does not, a page-only request fetches exactly what is missing, without waiting for the counts.
             var hotTask = hotSegment is null ? null : search.SearchAsync(query, hotSegment, size, cts.Token);
             var coldAll = years.Count == 0 ? null : new Segment(
                 "cold", years[^1].From, years[0].To, [.. years.SelectMany(y => y.Indices)]);
-            var coldTask = coldAll is null ? null : search.SearchByYearAsync(query, coldAll, 0, cts.Token);
-            start = i =>
-            {
-                var segment = segments[i];
-                if (segment == hotSegment) return hotTask!;
-                var year = int.Parse(segment.Label, CultureInfo.InvariantCulture);
-                var page = segment == years[0] ? TopUp(hotTask, query, coldAll!, size, cts.Token) : null;
-                return YearOf(coldTask!, year, page);
-            };
+            var coldTask = coldAll is null ? null : Gated(() => search.SearchByYearAsync(query, coldAll, 0, cts.Token), cts.Token);
+            topUp = coldAll is null ? null : TopUp(hotTask, query, coldAll, size, cts.Token);
+            start = i => segments[i] == hotSegment
+                ? hotTask!
+                : YearOf(coldTask!, int.Parse(segments[i].Label, CultureInfo.InvariantCulture));
             limit = segments.Count;
         }
 
@@ -115,18 +135,34 @@ public sealed class TwoPhaseSearch(ISegmentSearch search, IndexLayout layout, Ti
 
         var running = Totals.Empty;
         var (sentCount, sentComplete) = (-1, false);
+        var pageFinal = false;
         long? firstPageMs = null;
         try
         {
             Launch();
             for (var i = 0; i < segments.Count; i++)
             {
+                // Combined: before the first cold year's totals, take the page-only top-up. It covered all cold
+                // history at once, so with it the page is final, however few matches there are.
+                if (topUp is not null && segments[i] == years[0])
+                {
+                    var more = await topUp.ConfigureAwait(false);
+                    hits.AddRange(more.Take(size - hits.Count));
+                    pageFinal = true;
+                    if (hits.Count != sentCount || !sentComplete)
+                    {
+                        (sentCount, sentComplete) = (hits.Count, true);
+                        firstPageMs ??= Now();
+                        yield return new PageEvent(Now(), [.. hits], Complete: true);
+                    }
+                }
+
                 var result = await inFlight.Dequeue().ConfigureAwait(false);
                 if (hits.Count < size) hits.AddRange(result.Hits.Take(size - hits.Count));
                 Launch();
 
                 running = running.Add(result.Totals);
-                var complete = hits.Count >= size || i == segments.Count - 1;
+                var complete = pageFinal || hits.Count >= size || i == segments.Count - 1;
                 if ((hits.Count != sentCount || complete != sentComplete) && (hits.Count > 0 || complete))
                 {
                     (sentCount, sentComplete) = (hits.Count, complete);
@@ -146,7 +182,23 @@ public sealed class TwoPhaseSearch(ISegmentSearch search, IndexLayout layout, Ti
             // Reached early when the caller stops listening: stop what is still running.
             // Their outcome no longer matters, so wait for them without letting a failure mask the original exit.
             await cts.CancelAsync().ConfigureAwait(false);
-            await Task.WhenAll(inFlight.Cast<Task>()).ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
+            await Task.WhenAll(inFlight.Cast<Task>().Append(topUp ?? Task.CompletedTask))
+                .ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
+        }
+    }
+
+    /// <summary>Runs a cold search once the <see cref="ColdConcurrency"/> limit allows.</summary>
+    private async Task<T> Gated<T>(Func<Task<T>> run, CancellationToken ct)
+    {
+        if (_coldGate is null) return await run().ConfigureAwait(false);
+        await _coldGate.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            return await run().ConfigureAwait(false);
+        }
+        finally
+        {
+            _coldGate.Release();
         }
     }
 
@@ -157,15 +209,10 @@ public sealed class TwoPhaseSearch(ISegmentSearch search, IndexLayout layout, Ti
         return have >= size ? [] : await search.PageAsync(query, cold, size - have, ct).ConfigureAwait(false);
     }
 
-    /// <summary>One year's share of the combined cold search: its totals, plus the page top-up if it is the newest year.</summary>
-    private static async Task<SearchPage> YearOf(Task<YearSearch> cold, int year, Task<IReadOnlyList<Payment>>? page)
+    /// <summary>One year's share of the combined cold search: its totals.</summary>
+    private static async Task<SearchPage> YearOf(Task<YearSearch> cold, int year)
     {
         var all = await cold.ConfigureAwait(false);
-        return new SearchPage
-        {
-            Hits = page is null ? [] : await page.ConfigureAwait(false),
-            Totals = all.ByYear.GetValueOrDefault(year, Totals.Empty),
-            TookMs = all.Page.TookMs,
-        };
+        return new SearchPage { Hits = [], Totals = all.ByYear.GetValueOrDefault(year, Totals.Empty), TookMs = all.Page.TookMs };
     }
 }

@@ -9,7 +9,11 @@ var url = new Uri(builder.Configuration["Elasticsearch:Url"] ?? "http://localhos
 builder.Services.AddSingleton(_ => ElasticConnection.Connect(url));
 builder.Services.AddSingleton<PaymentSearch>();
 builder.Services.AddSingleton<ISegmentSearch>(sp => sp.GetRequiredService<PaymentSearch>());
-builder.Services.AddSingleton<TwoPhaseSearch>();
+builder.Services.AddSingleton(sp => new TwoPhaseSearch(
+    sp.GetRequiredService<ISegmentSearch>(), sp.GetRequiredService<IndexLayout>(), sp.GetRequiredService<TimeProvider>())
+{
+    ColdConcurrency = builder.Configuration.GetValue<int?>("Search:ColdConcurrency"),
+});
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddSingleton(sp =>
     new IndexLayout(DateOnly.FromDateTime(sp.GetRequiredService<TimeProvider>().GetUtcNow().UtcDateTime)));

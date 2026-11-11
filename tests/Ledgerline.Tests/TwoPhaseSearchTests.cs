@@ -130,6 +130,43 @@ public class TwoPhaseSearchTests
     }
 
     [Fact]
+    public async Task Combined_sends_a_topped_up_page_without_waiting_for_the_cold_counts()
+    {
+        // A needle query: almost nothing in the hot tier, and counting cold history is slow.
+        var fake = new FakeSearch { Matches = new() { ["hot"] = 1, ["2021"] = 2 }, DelayMs = new() { ["cold"] = 400 } };
+        var search = new TwoPhaseSearch(fake, Layout, TimeProvider.System) { Cold = ColdStrategy.Combined };
+        var clock = System.Diagnostics.Stopwatch.StartNew();
+
+        PageEvent? page = null;
+        await foreach (var e in search.RunAsync(new PaymentQuery(), 50, TestContext.Current.CancellationToken))
+        {
+            if (e is PageEvent { Complete: true } p)
+            {
+                page = p;
+                Assert.True(clock.ElapsedMilliseconds < 300, $"page took {clock.ElapsedMilliseconds} ms");
+                break;
+            }
+        }
+
+        Assert.Equal(["hot-000", "2021-000", "2021-001"], page!.Hits.Select(h => h.Id));
+    }
+
+    [Fact]
+    public async Task ColdConcurrency_limits_cold_searches_across_all_callers_but_never_the_hot_tier()
+    {
+        var fake = new FakeSearch { Matches = Order.ToDictionary(s => s, _ => 100), DelayMs = new() { ["cold"] = 50 } };
+        var search = new TwoPhaseSearch(fake, Layout, TimeProvider.System) { Cold = ColdStrategy.Combined, ColdConcurrency = 2 };
+
+        await Task.WhenAll(Enumerable.Range(0, 8).Select(async _ =>
+        {
+            await foreach (var __ in search.RunAsync(new PaymentQuery(), 50, TestContext.Current.CancellationToken)) { }
+        }));
+
+        Assert.Equal(2, fake.MaxConcurrent["cold"]);
+        Assert.Equal(8, fake.Started.Count(s => s == "hot"));
+    }
+
+    [Fact]
     public async Task Combined_sends_the_hot_page_without_waiting_for_cold_history()
     {
         var fake = new FakeSearch { Matches = Order.ToDictionary(s => s, _ => 100), DelayMs = new() { ["cold"] = 300 } };
@@ -219,6 +256,8 @@ public class TwoPhaseSearchTests
         public ConcurrentDictionary<string, int> Sizes { get; } = new();
         public ConcurrentBag<string> Started { get; } = [];
         public ConcurrentBag<string> Cancelled { get; } = [];
+        public ConcurrentDictionary<string, int> MaxConcurrent { get; } = new();
+        private readonly ConcurrentDictionary<string, int> _running = new();
 
         public async Task<SearchPage> SearchAsync(PaymentQuery query, Segment segment, int size, CancellationToken ct = default)
         {
@@ -251,6 +290,8 @@ public class TwoPhaseSearchTests
         {
             Started.Add(label);
             Sizes[label] = size;
+            var now = _running.AddOrUpdate(label, 1, (_, n) => n + 1);
+            MaxConcurrent.AddOrUpdate(label, now, (_, max) => Math.Max(max, now));
             try
             {
                 await Task.Delay(DelayMs.GetValueOrDefault(label), ct);
@@ -259,6 +300,10 @@ public class TwoPhaseSearchTests
             {
                 Cancelled.Add(label);
                 throw;
+            }
+            finally
+            {
+                _running.AddOrUpdate(label, 0, (_, n) => n - 1);
             }
         }
 
