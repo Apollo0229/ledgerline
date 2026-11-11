@@ -1,4 +1,5 @@
-// Measures the single-query baseline against the two-phase stream, over HTTP, as a browser sees them.
+// Measures the single-query baseline against the two-phase stream (both cold strategies), over HTTP,
+// as a browser sees them.
 //
 //   dotnet run -c Release --project src/Ledgerline.Bench -- warm --runs 30
 //   dotnet run -c Release --project src/Ledgerline.Bench -- cold --runs 8
@@ -35,6 +36,8 @@ var scenarios = await Scenarios.LoadAsync(http);
 var environment = await Bench.DescribeAsync(http, elastic);
 Console.WriteLine($"{environment.Payments:N0} payments in {environment.Indices} indices, Elasticsearch {environment.ElasticsearchVersion}, {Environment.ProcessorCount} logical CPUs");
 
+string[] Streams = ["combined", "years"];
+
 object result = mode switch
 {
     "warm" => await RunSingle(cold: false),
@@ -50,31 +53,37 @@ if (output is not null)
     Console.WriteLine($"wrote {output}");
 }
 
+
 async Task<List<SingleResult>> RunSingle(bool cold)
 {
-    // Warm up both endpoints so JIT and connection set-up are not measured.
-    foreach (var s in scenarios) { await bench.BaselineAsync(s.Query); await bench.StreamAsync(s.Query); }
+    // Warm up every endpoint so JIT and connection set-up are not measured.
+    foreach (var s in scenarios)
+    {
+        await bench.BaselineAsync(s.Query);
+        foreach (var c in Streams) await bench.StreamAsync(s.Query, c);
+    }
 
     var results = new List<SingleResult>();
     foreach (var s in scenarios)
     {
         var baseline = new List<double>();
-        var stream = new List<Timing>();
+        var streams = Streams.ToDictionary(c => c, _ => new List<Timing>());
         for (var i = 0; i < runs; i++)
         {
-            // Alternate which goes first, so neither always benefits from the other's leftovers.
-            for (var k = 0; k < 2; k++)
+            // Rotate which goes first, so none always benefits from another's leftovers.
+            for (var k = 0; k < 3; k++)
             {
                 if (cold) await Caches.DropAsync(http, elastic);
-                if ((i + k) % 2 == 0) baseline.Add(await bench.BaselineAsync(s.Query));
-                else stream.Add(await bench.StreamAsync(s.Query));
+                var which = (i + k) % 3;
+                if (which == 0) baseline.Add(await bench.BaselineAsync(s.Query));
+                else streams[Streams[which - 1]].Add(await bench.StreamAsync(s.Query, Streams[which - 1]));
             }
         }
 
-        var r = new SingleResult(s.Name, s.Query, Stats.Of(baseline), Stats.Of(stream.Select(t => t.FirstPageMs)),
-            Stats.Of(stream.Select(t => t.ExactPageMs)), Stats.Of(stream.Select(t => t.DoneMs)), stream[0].Matches);
+        var r = new SingleResult(s.Name, s.Query, Stats.Of(baseline),
+            StreamStats.Of(streams["combined"]), StreamStats.Of(streams["years"]), streams["combined"][0].Matches);
         results.Add(r);
-        Console.WriteLine($"{s.Name,-34} baseline p50 {r.Baseline.P50,7:F1} ms | stream first page {r.FirstPage.P50,7:F1}, exact page {r.ExactPage.P50,7:F1}, done {r.Done.P50,7:F1} ms   ({r.Matches:N0} matches)");
+        Console.WriteLine($"{s.Name,-30} baseline {r.Baseline.P50,6:F1} | combined page {r.Combined.ExactPage.P50,6:F1} done {r.Combined.Done.P50,6:F1} | years page {r.Years.ExactPage.P50,6:F1} done {r.Years.Done.P50,6:F1} ms (p50, {r.Matches:N0} matches)");
     }
     return results;
 }
@@ -82,7 +91,7 @@ async Task<List<SingleResult>> RunSingle(bool cold)
 async Task<List<LoadResult>> RunLoad()
 {
     var results = new List<LoadResult>();
-    foreach (var endpoint in new[] { "baseline", "stream" })
+    foreach (var endpoint in new[] { "baseline", "combined", "years" })
     {
         await RunFor(endpoint, TimeSpan.FromSeconds(5), new List<double>(), new List<Timing>()); // warm-up, discarded
         var baseline = new List<double>();
@@ -116,7 +125,7 @@ async Task RunFor(string endpoint, TimeSpan duration, List<double> baseline, Lis
             }
             else
             {
-                var t = await bench.StreamAsync(query);
+                var t = await bench.StreamAsync(query, endpoint);
                 lock (stream) stream.Add(t);
             }
         }
@@ -163,10 +172,10 @@ internal sealed class Bench(HttpClient http)
     /// The stream: time to the first page event (which may still grow), to the first complete page (the same
     /// page the baseline returns) and to done (the same totals).
     /// </summary>
-    public async Task<Timing> StreamAsync(string query)
+    public async Task<Timing> StreamAsync(string query, string cold)
     {
         var clock = Stopwatch.StartNew();
-        using var response = await http.GetAsync(new Uri($"v1/search/stream?{query}", UriKind.Relative), HttpCompletionOption.ResponseHeadersRead);
+        using var response = await http.GetAsync(new Uri($"v1/search/stream?{query}&cold={cold}", UriKind.Relative), HttpCompletionOption.ResponseHeadersRead);
         response.EnsureSuccessStatusCode();
         await using var body = await response.Content.ReadAsStreamAsync();
 
@@ -243,7 +252,13 @@ internal sealed record Stats(int N, double P50, double P95, double P99, double M
     }
 }
 
-internal sealed record SingleResult(string Scenario, string Query, Stats Baseline, Stats FirstPage, Stats ExactPage, Stats Done, long Matches);
+internal sealed record StreamStats(Stats FirstPage, Stats ExactPage, Stats Done)
+{
+    public static StreamStats Of(List<Timing> t) =>
+        new(Stats.Of(t.Select(x => x.FirstPageMs)), Stats.Of(t.Select(x => x.ExactPageMs)), Stats.Of(t.Select(x => x.DoneMs)));
+}
+
+internal sealed record SingleResult(string Scenario, string Query, Stats Baseline, StreamStats Combined, StreamStats Years, long Matches);
 
 internal sealed record LoadResult(string Endpoint, int Users, double RequestsPerSecond, Stats Page, Stats Complete);
 
