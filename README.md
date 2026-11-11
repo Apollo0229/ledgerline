@@ -28,8 +28,9 @@ whole answer, because every cold document is older. Ledgerline:
 
 The baseline, one query across every index, is kept as an endpoint so the
 difference is [measured](#results) rather than claimed. At 20 million payments
-under load, page 1 arrives **2–6× sooner** at the 50th and 95th percentile and
-the cluster serves **30–40% more searches per second**.
+with 16 to 64 concurrent users, page 1 arrives **1.9–6.3× sooner** at the
+median (1.3–3.1× at p95) and the cluster serves **30–40% more searches per
+second**. Needle queries are the exception, and the results say so.
 
 ## Stack
 
