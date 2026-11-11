@@ -83,7 +83,7 @@ public sealed class StreamApiTests(SearchFixture fx) : IDisposable
         }
 
         await slow.AllCancelled.Task.WaitAsync(TimeSpan.FromSeconds(10), ct);
-        Assert.Equal(3, slow.Cancelled); // the three cold years in flight; none of them ran to the end
+        Assert.Equal(1, slow.Cancelled); // the cold request in flight did not run to the end
     }
 
     private static async Task<List<SseItem<JsonElement>>> Read(HttpClient http, string url)
@@ -102,7 +102,7 @@ public sealed class StreamApiTests(SearchFixture fx) : IDisposable
 
     private static List<string?> Ids(JsonElement hits) => hits.EnumerateArray().Select(h => h.GetProperty("id").GetString()).ToList();
 
-    /// <summary>The hot tier answers with a full page at once; cold years take a minute unless cancelled.</summary>
+    /// <summary>The hot tier answers with a full page at once; cold history takes a minute unless cancelled.</summary>
     private sealed class SlowColdYears : ISegmentSearch
     {
         private int _started;
@@ -124,26 +124,50 @@ public sealed class StreamApiTests(SearchFixture fx) : IDisposable
                 return new SearchPage { Hits = Enumerable.Repeat(hit, size).ToList(), Totals = Totals.Empty, TookMs = 1 };
             }
 
-            if (Interlocked.Increment(ref _started) == 3) AllStarted.SetResult();
+            await SlowColdAsync(ct);
+            throw new InvalidOperationException("unreachable");
+        }
+
+        public async Task<YearSearch> SearchByYearAsync(PaymentQuery query, Segment segment, int size, CancellationToken ct = default)
+        {
+            await SlowColdAsync(ct);
+            throw new InvalidOperationException("unreachable");
+        }
+
+        public async Task<IReadOnlyList<Payment>> PageAsync(PaymentQuery query, Segment segment, int size, CancellationToken ct = default)
+        {
+            await SlowColdAsync(ct);
+            throw new InvalidOperationException("unreachable");
+        }
+
+        private async Task SlowColdAsync(CancellationToken ct)
+        {
+            if (Interlocked.Increment(ref _started) == 1) AllStarted.SetResult();
             try
             {
                 await Task.Delay(TimeSpan.FromMinutes(1), ct);
-                throw new InvalidOperationException("a cold year ran to the end instead of being cancelled");
+                throw new InvalidOperationException("a cold search ran to the end instead of being cancelled");
             }
             catch (OperationCanceledException)
             {
-                if (Interlocked.Increment(ref _cancelled) == 3) AllCancelled.SetResult();
+                if (Interlocked.Increment(ref _cancelled) == 1) AllCancelled.SetResult();
                 throw;
             }
         }
     }
 
-    /// <summary>The hot tier answers; the first cold year throws, as a lost node would.</summary>
+    /// <summary>The hot tier answers; cold history throws, as a lost node would.</summary>
     private sealed class FailsOnColdYears : ISegmentSearch
     {
         public Task<SearchPage> SearchAsync(PaymentQuery query, Segment segment, int size, CancellationToken ct = default) =>
             segment.Label == "hot"
                 ? Task.FromResult(new SearchPage { Hits = [], Totals = Totals.Empty, TookMs = 1 })
                 : Task.FromException<SearchPage>(new InvalidOperationException("node lost"));
+
+        public Task<YearSearch> SearchByYearAsync(PaymentQuery query, Segment segment, int size, CancellationToken ct = default) =>
+            Task.FromException<YearSearch>(new InvalidOperationException("node lost"));
+
+        public Task<IReadOnlyList<Payment>> PageAsync(PaymentQuery query, Segment segment, int size, CancellationToken ct = default) =>
+            Task.FromException<IReadOnlyList<Payment>>(new InvalidOperationException("node lost"));
     }
 }

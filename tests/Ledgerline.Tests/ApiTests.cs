@@ -21,6 +21,7 @@ public sealed class ApiTests(SearchFixture fx) : IDisposable
     [InlineData("from=2025-02-01&to=2025-01-01", "to")]
     [InlineData("size=500", "size")]
     [InlineData("status=bounced", "status")]
+    [InlineData("cold=fastest", "cold")]
     public async Task Invalid_filters_are_rejected_with_a_named_field(string query, string field)
     {
         using var http = _app.CreateClient();
@@ -60,6 +61,29 @@ public sealed class ApiTests(SearchFixture fx) : IDisposable
 
         Assert.Equal(fx.Payments.Select(p => p.Client).Distinct().Order(StringComparer.Ordinal), clients);
     }
+
+    [Fact]
+    public async Task Search_can_break_totals_down_by_year_matching_the_overall_totals()
+    {
+        fx.RequireCluster();
+        using var http = _app.CreateClient();
+
+        using var plain = JsonDocument.Parse(await http.GetStringAsync(
+            new Uri("/v1/search?status=exception&size=5", UriKind.Relative), TestContext.Current.CancellationToken));
+        using var years = JsonDocument.Parse(await http.GetStringAsync(
+            new Uri("/v1/search?status=exception&size=5&years=true", UriKind.Relative), TestContext.Current.CancellationToken));
+
+        var byYear = years.RootElement.GetProperty("by_year").EnumerateObject().ToList();
+        Assert.Equal(byYear.Select(y => y.Name).OrderDescending(StringComparer.Ordinal), byYear.Select(y => y.Name));
+        var count = plain.RootElement.GetProperty("totals").GetProperty("count").GetInt64();
+        Assert.Equal(count, years.RootElement.GetProperty("totals").GetProperty("count").GetInt64());
+        Assert.Equal(count, byYear.Sum(y => y.Value.GetProperty("count").GetInt64()));
+        Assert.Equal(
+            Ids(plain.RootElement.GetProperty("hits")),
+            Ids(years.RootElement.GetProperty("hits")));
+    }
+
+    private static List<string?> Ids(JsonElement hits) => hits.EnumerateArray().Select(h => h.GetProperty("id").GetString()).ToList();
 
     [Fact]
     public async Task Search_returns_a_page_newest_first_with_snake_case_fields()

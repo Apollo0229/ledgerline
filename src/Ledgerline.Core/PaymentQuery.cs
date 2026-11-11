@@ -37,3 +37,6 @@ public sealed record Totals(long Count, decimal Amount, IReadOnlyDictionary<Paym
             .Where(x => x.n > 0)
             .ToDictionary(x => x.s, x => x.n));
 }
+
+/// <summary>A page and totals over several years at once, with the totals also broken down by calendar year.</summary>
+public sealed record YearSearch(SearchPage Page, IReadOnlyDictionary<int, Totals> ByYear);
