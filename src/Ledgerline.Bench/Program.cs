@@ -4,6 +4,7 @@
 //   dotnet run -c Release --project src/Ledgerline.Bench -- warm --runs 30
 //   dotnet run -c Release --project src/Ledgerline.Bench -- cold --runs 8
 //   dotnet run -c Release --project src/Ledgerline.Bench -- load --users 16 --seconds 30
+//   dotnet run -c Release --project src/Ledgerline.Bench -- record      (the public demo's recording)
 //
 // cold clears Elasticsearch's caches and drops the operating system's page cache inside Docker's VM
 // before every request (it runs a privileged alpine container), so each search reads from disk.
@@ -37,6 +38,17 @@ var environment = await Bench.DescribeAsync(http, elastic);
 Console.WriteLine($"{environment.Payments:N0} payments in {environment.Indices} indices, Elasticsearch {environment.ElasticsearchVersion}, {Environment.ProcessorCount} logical CPUs");
 
 string[] Streams = ["combined", "years"];
+
+if (mode == "record")
+{
+    // The public demo's data: see Recorder.
+    var recording = await Recorder.RunAsync(http, elastic, environment, int.Parse(Arg("--runs") ?? "3", inv));
+    var path = output ?? "web/public/demo/recording.json";
+    Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(path))!);
+    await File.WriteAllTextAsync(path, JsonSerializer.Serialize(recording, Json.Compact));
+    Console.WriteLine($"wrote {path} ({new FileInfo(path).Length / 1024:N0} KB)");
+    return;
+}
 
 object result = mode switch
 {
@@ -279,4 +291,7 @@ internal static class Json
         PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower,
         NumberHandling = JsonNumberHandling.AllowNamedFloatingPointLiterals,
     };
+
+    /// <summary>For files the browser downloads.</summary>
+    public static readonly JsonSerializerOptions Compact = new(Options) { WriteIndented = false };
 }
