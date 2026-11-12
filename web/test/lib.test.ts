@@ -59,6 +59,7 @@ describe("stream reducer", () => {
     s = reduce(s, { type: "page", event: { hits: [hit("a")], complete: false, at_ms: 5 }, now: 10 });
     s = reduce(s, { type: "page", event: { hits: [hit("a"), hit("b")], complete: true, at_ms: 9 }, now: 25 });
     expect(s.firstPageMs).toBe(10);
+    expect(s.exactPageMs).toBe(25);
     expect(s.hits.map((h) => h.id)).toEqual(["a", "b"]);
   });
 

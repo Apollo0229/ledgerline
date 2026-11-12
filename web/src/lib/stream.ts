@@ -20,8 +20,10 @@ export interface SearchState {
   /** True when no later segment can change the page. */
   pageComplete: boolean;
   running: Totals;
-  /** Time to the first page as the person experienced it, network included. */
+  /** Time to the first page event as the person experienced it, network included. It may still grow. */
   firstPageMs?: number;
+  /** Time to the page being exact: no later segment can change it. Often the same moment as the first page. */
+  exactPageMs?: number | undefined;
   doneMs?: number;
   error?: string;
 }
@@ -69,6 +71,7 @@ export function reduce(state: SearchState, action: Action): SearchState {
         hasPage: true,
         pageComplete: action.event.complete,
         firstPageMs: state.firstPageMs ?? action.now - state.startedAt,
+        exactPageMs: state.exactPageMs ?? (action.event.complete ? action.now - state.startedAt : undefined),
       };
     case "progress":
       return {
@@ -84,6 +87,7 @@ export function reduce(state: SearchState, action: Action): SearchState {
         phase: "done",
         running: action.event.totals,
         doneMs: action.now - state.startedAt,
+        exactPageMs: state.exactPageMs ?? action.now - state.startedAt,
         // A search with no matches anywhere still ends with a (complete, empty) page.
         hasPage: true,
         pageComplete: true,

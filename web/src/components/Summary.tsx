@@ -45,11 +45,22 @@ export function Summary({ state }: { state: SearchState }) {
             {done} of {segments.length} {segments.length === 1 ? "segment" : "segments"} searched
           </span>
         </div>
-        {state.firstPageMs !== undefined && (
-          <span>
-            First page in <strong className="font-semibold text-ink">{duration(state.firstPageMs)}</strong>
-          </span>
-        )}
+        {state.firstPageMs !== undefined &&
+          (state.exactPageMs === undefined || state.exactPageMs - state.firstPageMs < 1 ? (
+            <span>
+              First page in <strong className="font-semibold text-ink">{duration(state.exactPageMs ?? state.firstPageMs)}</strong>
+            </span>
+          ) : (
+            // The hot tier had a few matches but not a page: they show first, the exact page later.
+            <>
+              <span>
+                First results in <strong className="font-semibold text-ink">{duration(state.firstPageMs)}</strong>
+              </span>
+              <span>
+                Exact page in <strong className="font-semibold text-ink">{duration(state.exactPageMs)}</strong>
+              </span>
+            </>
+          ))}
         {state.doneMs !== undefined && (
           <span>
             All history in <strong className="font-semibold text-ink">{duration(state.doneMs)}</strong>
