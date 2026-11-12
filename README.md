@@ -4,9 +4,11 @@ Fast search over years of lockbox payments. An ASP.NET Core API over Elasticsear
 that answers the first page from the hot tier in milliseconds and streams the rest
 of the answer to a React UI over Server-Sent Events while cold history is searched.
 
-![The Ledgerline portal: filters, running totals, matches by year and the newest payments](docs/portal.png)
+**[Try the demo](https://apollo0229.github.io/ledgerline/)**: eight real searches over 20 million
+payments, recorded from the running stack and replayed in the portal, next to how long one plain
+search took for the same answer.
 
-> Work in progress. See the milestones below.
+![The Ledgerline portal: filters, running totals, matches by year and the newest payments](docs/portal.png)
 
 ## The problem
 
@@ -48,7 +50,7 @@ second**. Needle queries are the exception, and the results say so.
 - [x] 2. **Two-phase streamed search**: hot page first, cold years streamed over SSE, cancellation
 - [x] 3. **Search portal**: React UI with filters, skeletons and live totals
 - [x] 4. **Measured**: baseline vs two-phase, time to first result and p95 under load
-- [ ] 5. **Public demo**
+- [x] 5. **Public demo**: recorded searches replayed on GitHub Pages
 
 ## How the data is laid out
 
@@ -63,6 +65,22 @@ second**. Needle queries are the exception, and the results say so.
   amounts around $1,800, about 95.5% posted, 3.5% exceptions and 1% returned
   items. Volume grows over time. Each month is generated from its own seed, so
   the data is identical on every machine and re-seeding overwrites by id.
+
+## The public demo
+
+GitHub Pages serves static files only, and no free host without a payment card runs
+Elasticsearch, so the [demo](https://apollo0229.github.io/ledgerline/) replays searches
+recorded from the real stack instead of calling a live API:
+
+- `Ledgerline.Bench record` ran eight searches over 20,000,000 payments, with caches dropped
+  before each, keeping every streamed event with the time it arrived and the fair baseline's
+  time for the same search ([`web/public/demo/recording.json`](web/public/demo/recording.json)).
+- The portal, built with `VITE_DEMO=1`, replays each recording event by event through the same
+  code as a live search. It runs 10× slower by default so the stages are visible; the timings
+  shown are always the recorded ones.
+- Two of the eight are searches where two-phase is **not** faster, and they are labelled so.
+
+Every filter works live with `docker compose up`.
 
 ## Run it
 
