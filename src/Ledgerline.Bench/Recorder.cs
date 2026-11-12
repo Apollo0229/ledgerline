@@ -43,7 +43,7 @@ internal static class Recorder
                 "Rare: the newest three months hold only a few, so the page is topped up from cold history."),
             new("only-2021", "Only 2021", new() { ["range"] = "custom", ["from"] = "2021-01-01", ["to"] = "2021-12-31" },
                 "No hot tier in range: the page comes from a page-only query over 2021."),
-            new("needle", $"One 2021 invoice ({invoice})", new() { ["range"] = "all", ["text"] = invoice },
+            new("needle", $"Needle: invoice {invoice}", new() { ["range"] = "all", ["text"] = invoice },
                 "The weak spot: nearly nothing matches recently, so two-phase cannot win here."),
         ];
 
